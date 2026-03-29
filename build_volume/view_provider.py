@@ -240,56 +240,65 @@ class BuildVolumeViewProvider:
     # Coin3D scene setup
 
     def attach(self, vp):
-        if self._attached:
-            # Already attached — just refresh geometry
-            if hasattr( vp, "Object" ):
-                self.update_geometry( vp.Object )
-                self.update_gcode( vp.Object )
-            return
-        self._attached = True
+        self._ensure_attrs()
         self._vp = vp
 
-        self._root = coin.SoSeparator()
+        if self._root is None:
+            # Build scene graph
+            self._root = coin.SoSeparator()
 
-        # SoTransform to apply PrinterOffset — updated in place, no rebuild needed
-        self._offset_transform = coin.SoMatrixTransform()
-        #self._offset_transform.translation.setValue( 0, 0, 0 )
-        self._root.addChild( self._offset_transform )
+            self._offset_transform = coin.SoMatrixTransform()
+            self._root.addChild( self._offset_transform )
 
-        # Placeholder children — filled in by update_geometry()
-        self._envelope_node = coin.SoSeparator()
-        self._grid_node     = coin.SoSeparator()
-        self._bed_node      = coin.SoSeparator()
-        self._axis_node     = coin.SoSeparator()
+            self._envelope_node = coin.SoSeparator()
+            self._grid_node     = coin.SoSeparator()
+            self._bed_node      = coin.SoSeparator()
+            self._axis_node     = coin.SoSeparator()
 
-        self._root.addChild(self._envelope_node)
-        self._root.addChild(self._grid_node)
-        self._root.addChild(self._bed_node)
-        self._root.addChild(self._axis_node)
+            self._root.addChild(self._envelope_node)
+            self._root.addChild(self._grid_node)
+            self._root.addChild(self._bed_node)
+            self._root.addChild(self._axis_node)
 
+            if _GUI_AVAILABLE:
+                self._gcode_root = coin.SoSeparator()
+                self._root.addChild( self._gcode_root )
+
+            try:
+                from gcode_viewer.renderer import GCodeRenderer
+                self._gcode_renderer = GCodeRenderer()
+            except Exception:
+                self._gcode_renderer = None
+
+        # Register display modes.
+        # On repeated calls (property init firing attach multiple times),
+        # switch display mode first to force FreeCAD to re-evaluate the scene.
+        try:
+            existing = vp.DisplayMode
+            vp.DisplayMode = "Wireframe" if existing != "Wireframe" else "Flat Lines"
+        except Exception:
+            existing = "Flat Lines"
         vp.addDisplayMode(self._root, "Wireframe")
         vp.addDisplayMode(self._root, "Flat Lines")
 
-        # G-code overlay root — added as child of main root
-        if _GUI_AVAILABLE:
-            self._gcode_root = coin.SoSeparator()
-            self._root.addChild( self._gcode_root )
-
-        try:
-            from gcode_viewer.renderer import GCodeRenderer
-            self._gcode_renderer = GCodeRenderer()
-        except Exception:
-            self._gcode_renderer = None
-
-        # Try initial geometry build
+        # Refresh geometry and force viewport redraw
         if hasattr(vp, "Object"):
             self.update_geometry(vp.Object)
             self.update_gcode(vp.Object)
+        if self._root:
+                self._root.touch()
 
     def update_geometry(self, fp) -> None:
         """Rebuild all Coin3D nodes from current fp dimensions."""
+        self._ensure_attrs()
         if self._root is None:
-            return
+            # Proxy instance mismatch — attach() ran on a different instance.
+            # Re-attach using stored vp reference or fp.ViewObject.
+            vp = self._vp or getattr( fp, "ViewObject", None )
+            if vp is not None:
+                self.attach( vp )
+            if self._root is None:
+                return
 
         try:
             w = float(fp.Width)
@@ -316,10 +325,7 @@ class BuildVolumeViewProvider:
             b.move( ox, oy, 0 )    
         
             r = m.multiply( b )
-            print( f"Placement transform:\n{m}\n" )
-            print( f"Offset transform:\n{b}\n" )
-            print( f"Combined transform:\n{r}\n" )
-            sm = coin.SbMatrix()
+            #    #        sm = coin.SbMatrix()
             sm.setValue( [ [ r.A11, r.A21, r.A31, r.A41 ],
                            [ r.A12, r.A22, r.A32, r.A42 ],
                            [ r.A13, r.A23, r.A33, r.A43 ],
@@ -358,6 +364,9 @@ class BuildVolumeViewProvider:
             self._axis_node,
             _build_axis_lines(_AXIS_LENGTH)
         )
+
+        if self._root:
+            self._root.touch()
 
     @staticmethod
     def _rebuild_node(parent: coin.SoSeparator, new_child: coin.SoNode) -> None:
@@ -409,7 +418,8 @@ class BuildVolumeViewProvider:
             fp = getattr( vp, "Object", None )
             if fp:
                 self.update_geometry( fp )
-                self._root.touch() if self._root else None
+                if self._root:
+                                self._root.touch() 
 
         gcode_props = {
             "ShowGCode", "GCodeLayer", "GCodeShowUpTo", "GCodeShowTravel",
@@ -424,16 +434,21 @@ class BuildVolumeViewProvider:
                 self.update_gcode( fp )
 
     def getIcon(self) -> str:
-        # Fallback to a standard FreeCAD icon; replace with custom icon later
-        return ":/icons/PartDesign_Body.svg"
+        from Common import getIconPath
+        return getIconPath( "Volume.svg" )
 
     def update_gcode( self, fp ) -> None:
         """Sync G-code renderer with current FP properties."""
+        self._ensure_attrs()
         from Common import Log, LogLevel
 
-        # Not ready yet — attach() hasn't run or root not initialized
+        # Not ready yet — try to self-attach
         if self._root is None:
-            return   # will be called again from attach()
+            vp = self._vp or getattr( fp, "ViewObject", None )
+            if vp is not None:
+                self.attach( vp )
+            if self._root is None:
+                return
         # Ensure mtime attr exists (objects created before this fix)
         if not hasattr( self, "_loaded_gcode_mtime" ):
             self._loaded_gcode_mtime = 0
@@ -541,8 +556,8 @@ class BuildVolumeViewProvider:
         else:
             self._gcode_renderer.show_only_layer( cur )
 
-        # Notify Coin3D that the scene changed
-        self._gcode_root.touch()
+        if self._root:
+                self._root.touch()
 
     def claimChildren( self ):
         """Show assigned bodies as children in the model tree."""
@@ -597,3 +612,23 @@ class BuildVolumeViewProvider:
         self._loaded_gcode_mtime = 0
         self._offset_transform   = None
         self._attached           = False
+
+    def _ensure_attrs( self ) -> None:
+        """Guard against missing attrs when restored from old documents."""
+        for attr, default in [
+            ( "_root",               None  ),
+            ( "_vp",                 None  ),
+            ( "_envelope_node",      None  ),
+            ( "_grid_node",          None  ),
+            ( "_bed_node",           None  ),
+            ( "_axis_node",          None  ),
+            ( "_gcode_root",         None  ),
+            ( "_gcode_renderer",     None  ),
+            ( "_loaded_gcode_path",  None  ),
+            ( "_loaded_gcode_mtime", 0     ),
+            ( "_offset_transform",   None  ),
+            ( "_attached",           False ),
+            ( "_modes_registered",    False ),
+        ]:
+            if not hasattr( self, attr ):
+                setattr( self, attr, default )

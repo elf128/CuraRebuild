@@ -161,7 +161,7 @@ class BuildVolume:
             fp.addProperty(
                 "App::PropertyBool", "ShowGCode", _GRP_VIZ,
                 "Show G-code toolpaths in the 3D viewport"
-            ).ShowGCode = False
+            ).ShowGCode = True
 
         if "GCodeLayer" not in existing:
             fp.addProperty(
@@ -203,7 +203,22 @@ class BuildVolume:
     # FreeCAD object protocol
 
     def execute( self, fp: FreeCAD.DocumentObject ) -> None:
-        """Called by FreeCAD on recompute. Runs auto-slice if enabled."""
+        """Called by FreeCAD on recompute — after all properties are set."""
+        # Update geometry now that all properties are available
+        if FreeCAD.GuiUp:
+            vp = getattr( fp, "ViewObject", None )
+            if vp and getattr( vp, "Proxy", None ):
+                try:
+                    vp.Proxy.update_geometry( fp )
+                    # Cycle display mode to force FreeCAD to re-read the scene.
+                    # This is the correct place — execute() fires after recompute
+                    # when all properties are guaranteed to be set.
+                    current = vp.DisplayMode
+                    vp.DisplayMode = "Wireframe" if current != "Wireframe" else "Flat Lines"
+                    vp.DisplayMode = current
+                except Exception:
+                    pass
+
         if getattr( fp, "EnableAutoSlice", False ) and                 getattr( fp, "GCodeOutputFile", "" ):
             self._run_slice( fp )
 
@@ -488,13 +503,11 @@ def make_build_volume(
 
     if FreeCAD.GuiUp:
         from build_volume.view_provider import BuildVolumeViewProvider
-        bvvp = BuildVolumeViewProvider( fp.ViewObject )
-        # FreeCAD only calls attach() when the object first appears in the
-        # 3D view. Call it explicitly so the renderer is ready immediately.
-        try:
-            bvvp.attach( fp.ViewObject )
-        except Exception as e:
-            Console.PrintWarning( f"[BuildVolume] attach() failed: {e}\n" )
+        BuildVolumeViewProvider( fp.ViewObject )
+        # Do NOT call attach() here — FreeCAD calls it naturally when the
+        # object appears in the 3D view, at which point all properties are
+        # already set and geometry will be correct on first render.
 
     doc.recompute()
+
     return fp
