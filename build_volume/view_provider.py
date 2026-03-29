@@ -325,7 +325,7 @@ class BuildVolumeViewProvider:
             b.move( ox, oy, 0 )    
         
             r = m.multiply( b )
-            #    #        sm = coin.SbMatrix()
+            sm = coin.SbMatrix()
             sm.setValue( [ [ r.A11, r.A21, r.A31, r.A41 ],
                            [ r.A12, r.A22, r.A32, r.A42 ],
                            [ r.A13, r.A23, r.A33, r.A43 ],
