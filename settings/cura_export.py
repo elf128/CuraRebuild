@@ -1,38 +1,31 @@
-# settings/cura_export.py
 #
-# Serialises a SettingsStack into the CuraEngine definition file stack:
+# CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-#   machine.def.json     — machine hardware definition
-#   profile.def.json     — collapsed override profile (all user layers merged)
-#   <body_id>.def.json   — per-mesh override definitions (one per assigned body)
+# cura_export.py
 #
-# CuraEngine definition format (version 2):
-# {
-#   "name": "...",
-#   "version": 2,
-#   "metadata": {
-#     "type": "machine" | "quality" | "quality_changes",
-#     "setting_version": 22,
-#     "author": "CuraRebuild"
-#   },
-#   "overrides": {
-#     "<cura_key>": { "default_value": <value> },
-#     ...
-#   }
-# }
+#   Created on:    Mar 16, 2026
+#       Author:    Vlad A. < elf128@gmail.com >
+#       Coauthors: Claude AI, Sonnet 4.6
 #
-# CuraEngine is invoked with:
-#   CuraEngine slice
-#     -j machine.def.json
-#     -l model.stl
-#     -o output.gcode
-#     -s <cura_key>=<value>   (any remaining per-slice overrides)
+#   Serialises a SettingsStack into CuraEngine definition files.
 #
-# Our approach:
-#   - machine.def.json  contains only MACHINE-home-layer settings
-#   - profile.def.json  contains the collapsed user-layer stack (all user layers
-#                       merged in priority order, machine layer excluded)
-#   - At slice time, any residual settings not in either def are passed as -s flags
+#   Copyright (c) 2026                                                    
+#                                                                         
+#   This program is free software; you can redistribute it and/or modify  
+#   it under the terms of the GNU Lesser General Public License (LGPL)    
+#   as published by the Free Software Foundation; either version 2 of     
+#   the License, or (at your option) any later version.                   
+#   for detail see the LICENCE text file.                                 
+#                                                                         
+#   This program is distributed in the hope that it will be useful,       
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of        
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         
+#   GNU Library General Public License for more details.                  
+#                                                                         
+#   You should have received a copy of the GNU Library General Public     
+#   License along with this program; if not, write to the Free Software   
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
+#   USA   
 
 from __future__ import annotations
 

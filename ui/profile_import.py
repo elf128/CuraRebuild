@@ -1,12 +1,31 @@
-# ui/profile_import.py
 #
-# Import settings from:
-#   1. .curaprofile  — zip archive containing container files (no extension)
-#   2. Sliced .gcode — Cura embeds settings as ;key = value comments
+# CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-# Both return a dict[str, Any] of raw cura_key → value pairs,
-# suitable for passing to MachineInstance.to_layers() or directly
-# merging into a UserLayer.
+# profile_import.py
+#
+#   Created on:    Mar 16, 2026
+#       Author:    Vlad A. < elf128@gmail.com >
+#       Coauthors: Claude AI, Sonnet 4.6
+#
+#   Import pipeline for .curaprofile and sliced G-code.
+#
+#   Copyright (c) 2026                                                    
+#                                                                         
+#   This program is free software; you can redistribute it and/or modify  
+#   it under the terms of the GNU Lesser General Public License (LGPL)    
+#   as published by the Free Software Foundation; either version 2 of     
+#   the License, or (at your option) any later version.                   
+#   for detail see the LICENCE text file.                                 
+#                                                                         
+#   This program is distributed in the hope that it will be useful,       
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of        
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         
+#   GNU Library General Public License for more details.                  
+#                                                                         
+#   You should have received a copy of the GNU Library General Public     
+#   License along with this program; if not, write to the Free Software   
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
+#   USA   
 
 from __future__ import annotations
 

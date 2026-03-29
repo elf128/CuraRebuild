@@ -1,15 +1,31 @@
-# settings/storage.py
 #
-# Persistence backends for the SettingsRegistry and per-stack ObjectLayers.
+# CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-# Two backends:
-#   JsonBackend       — plain JSON files, portable, human-readable
-#   FreeCADBackend    — FreeCAD ParamGet/SetFloat/SetString, survives restarts,
-#                       visible in FreeCAD's parameter editor
+# storage.py
 #
-# Both implement the StorageBackend protocol.  Callers should not care which
-# backend is active.  In practice the FreeCAD workbench uses FreeCADBackend
-# for runtime storage and JsonBackend for import/export.
+#   Created on:    Mar 16, 2026
+#       Author:    Vlad A. < elf128@gmail.com >
+#       Coauthors: Claude AI, Sonnet 4.6
+#
+#   JSON import/export backend for settings layers.
+#
+#   Copyright (c) 2026                                                    
+#                                                                         
+#   This program is free software; you can redistribute it and/or modify  
+#   it under the terms of the GNU Lesser General Public License (LGPL)    
+#   as published by the Free Software Foundation; either version 2 of     
+#   the License, or (at your option) any later version.                   
+#   for detail see the LICENCE text file.                                 
+#                                                                         
+#   This program is distributed in the hope that it will be useful,       
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of        
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         
+#   GNU Library General Public License for more details.                  
+#                                                                         
+#   You should have received a copy of the GNU Library General Public     
+#   License along with this program; if not, write to the Free Software   
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
+#   USA   
 
 from __future__ import annotations
 

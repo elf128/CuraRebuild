@@ -1,20 +1,31 @@
-# settings/schema.py
 #
-# Static schema of every setting the slicer workbench knows about.
-# Nothing in here is FreeCAD-specific — pure Python dataclasses.
+# CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-# Each SettingDef declares:
-#   key        — our internal identifier
-#   cura_key   — the exact key CuraEngine expects (often identical)
-#   label      — human-readable name for UI
-#   home_layer — the layer this setting naturally belongs to (MACHINE/USER/OBJECT)
-#                This is a suggestion only. Any setting can live in any user layer.
-#   dtype      — Python type: float, int, bool, str
-#   default    — fallback value if no layer defines it
-#   unit       — display unit string ("mm", "mm/s", "°C", "" for dimensionless)
-#   min_val    — optional minimum (for validation + UI spinbox range)
-#   max_val    — optional maximum
-#   description — tooltip text
+# schema.py
+#
+#   Created on:    Mar 16, 2026
+#       Author:    Vlad A. < elf128@gmail.com >
+#       Coauthors: Claude AI, Sonnet 4.6
+#
+#   SettingDef dataclass and SchemaRegistry singleton.
+#
+#   Copyright (c) 2026                                                    
+#                                                                         
+#   This program is free software; you can redistribute it and/or modify  
+#   it under the terms of the GNU Lesser General Public License (LGPL)    
+#   as published by the Free Software Foundation; either version 2 of     
+#   the License, or (at your option) any later version.                   
+#   for detail see the LICENCE text file.                                 
+#                                                                         
+#   This program is distributed in the hope that it will be useful,       
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of        
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         
+#   GNU Library General Public License for more details.                  
+#                                                                         
+#   You should have received a copy of the GNU Library General Public     
+#   License along with this program; if not, write to the Free Software   
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
+#   USA   
 
 from __future__ import annotations
 from dataclasses import dataclass, field

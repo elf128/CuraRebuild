@@ -1,23 +1,31 @@
-# settings/expr_eval.py
 #
-# Safe evaluator for Cura setting expressions.
+# CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-# Cura expressions are Python-like strings evaluated against the current
-# effective settings dict. Examples:
+# expr_eval.py
 #
-#   enabled: "adhesion_type != 'none'"
-#   enabled: "support_enable and support_structure == 'normal'"
-#   value:   "infill_line_width * 100 / infill_sparse_density"
-#   value:   "0 if infill_sparse_density == 0 else line_width * 100 / infill_sparse_density"
+#   Created on:    Mar 16, 2026
+#       Author:    Vlad A. < elf128@gmail.com >
+#       Coauthors: Claude AI, Sonnet 4.6
 #
-# Cura also uses helper functions:
-#   resolveOrValue('key')         — get effective value
-#   extruderValue(0, 'key')       — get value for extruder 0
-#   extruderValues('key')         — list of values across extruders
-#   defaultExtruderPosition()     — returns 0
-#   anyExtruder(0, 'key', val)    — any extruder has value
+#   Evaluates Cura enabled/value expressions.
 #
-# We stub these with sensible fallbacks so expressions evaluate without error.
+#   Copyright (c) 2026                                                    
+#                                                                         
+#   This program is free software; you can redistribute it and/or modify  
+#   it under the terms of the GNU Lesser General Public License (LGPL)    
+#   as published by the Free Software Foundation; either version 2 of     
+#   the License, or (at your option) any later version.                   
+#   for detail see the LICENCE text file.                                 
+#                                                                         
+#   This program is distributed in the hope that it will be useful,       
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of        
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         
+#   GNU Library General Public License for more details.                  
+#                                                                         
+#   You should have received a copy of the GNU Library General Public     
+#   License along with this program; if not, write to the Free Software   
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
+#   USA   
 
 from __future__ import annotations
 

@@ -1,37 +1,31 @@
-# ui/cura_import.py
 #
-# Parse Cura's multi-file machine configuration stack.
+# CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-# Real file layout (from observed Cura 4.x / 5.x):
+# cura_import.py
 #
-#   machine_instances/
-#       Custom+FFF+printer.global.cfg       ← URL-encoded name, .global.cfg ext
+#   Created on:    Mar 16, 2026
+#       Author:    Vlad A. < elf128@gmail.com >
+#       Coauthors: Claude AI, Sonnet 4.6
 #
-#   [general]          ← machine name, id, base definition
-#   [metadata]         ← setting_version, type, post_processing_scripts etc
-#   [containers]       ← numbered 0..N, each value is a container id
-#       0 = Custom FFF printer_user         → user/
-#       1 = custom_tpu_#2                   → quality_changes/
-#       2 = empty_intent                    → (skip empties)
-#       3 = draft                           → quality/
-#       4 = empty_material                  → (skip)
-#       5 = empty_variant                   → (skip)
-#       6 = Custom FFF printer_settings     → definition_changes/
-#       7 = custom                          → definitions/
+#   Import pipeline for Cura machine instances.
 #
-#   Container files use URL encoding:  space→+  #→%23
-#   Extension is .inst.cfg (not .cfg)
-#   Definition files are .def.json
-#
-#   Resolution order — index 0 wins (highest priority):
-#       0: user
-#       1: quality_changes
-#       2: intent         (skip)
-#       3: quality
-#       4: material       (often empty, skip)
-#       5: variant        (often empty, skip)
-#       6: definition_changes   ← machine-level user overrides
-#       7: definition           ← base hardware def.json
+#   Copyright (c) 2026                                                    
+#                                                                         
+#   This program is free software; you can redistribute it and/or modify  
+#   it under the terms of the GNU Lesser General Public License (LGPL)    
+#   as published by the Free Software Foundation; either version 2 of     
+#   the License, or (at your option) any later version.                   
+#   for detail see the LICENCE text file.                                 
+#                                                                         
+#   This program is distributed in the hope that it will be useful,       
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of        
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         
+#   GNU Library General Public License for more details.                  
+#                                                                         
+#   You should have received a copy of the GNU Library General Public     
+#   License along with this program; if not, write to the Free Software   
+#   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
+#   USA   
 
 from __future__ import annotations
 

@@ -33,7 +33,7 @@ from __future__ import annotations
 import FreeCAD
 import FreeCADGui
 from FreeCAD import Console
-from Common  import Log, LogLevel
+from Common  import Log, LogLevel, getIconPath
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ class CmdCreateBuildVolume:
         return {
             "MenuText": "Create Build Volume",
             "ToolTip":  "Add a new printer build volume to the scene",
-            "Pixmap":   "PartDesign_Body",
+            "Pixmap":   getIconPath( "Volume.svg" ),
         }
 
     def IsActive( self ):
@@ -192,7 +192,7 @@ class CmdSlice:
         return {
             "MenuText": "Slice",
             "ToolTip":  "Slice the selected Build Volume with CuraEngine",
-            "Pixmap":   "Std_Tool1",
+            "Pixmap":   getIconPath( "3DPrint.svg" ),
         }
 
     def IsActive( self ):
@@ -238,7 +238,7 @@ class CmdCreateUserLayer:
         return {
             "MenuText": "New Settings Layer",
             "ToolTip":  "Create a new named settings layer in the registry",
-            "Pixmap":   "Std_Tool2",
+            "Pixmap":   getIconPath( "Tool.svg" ),
         }
 
     def IsActive( self ):
@@ -268,7 +268,7 @@ class CmdCreateMachineLayer:
         return {
             "MenuText": "New Machine Definition",
             "ToolTip":  "Create a new printer machine definition",
-            "Pixmap":   "Std_Tool1",
+            "Pixmap":   getIconPath( "Settings.svg" ),
         }
 
     def IsActive( self ):

@@ -362,7 +362,7 @@ class LayerViewProvider:
 
     def getIcon( self ) -> str:
         from Common import getIconPath
-        return getIconPath( "3DPrint.svg" )
+        return getIconPath( "Tool.svg" )
 
     def attach( self, vp ): pass
     def updateData( self, fp, prop ): pass

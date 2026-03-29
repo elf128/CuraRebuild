@@ -1,20 +1,13 @@
 #
 # CuraRebuild — FreeCAD workbench for managing layered settings stacks
 #
-# ui/panels.py
+# panels.py
 #
-#   Created on:    Mar 15, 2026
+#   Created on:    Mar 16, 2026
 #       Author:    Vlad A. < elf128@gmail.com >
 #       Coauthors: Claude AI, Sonnet 4.6
 #
-# Task panels for all CuraRebuild commands.
-# Built programmatically from the settings schema — no .ui files needed.
-#
-# FreeCAD task panels are objects with:
-#   self.form  — a QWidget shown in the task panel area
-#   accept()   — called when the user clicks OK
-#   reject()   — called when the user clicks Cancel
-#   getStandardButtons() — bitmask of buttons to show
+#   All FreeCAD task panels for CuraRebuild.
 #
 #   Copyright (c) 2026                                                    
 #                                                                         
@@ -32,8 +25,7 @@
 #   You should have received a copy of the GNU Library General Public     
 #   License along with this program; if not, write to the Free Software   
 #   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  
-#   USA                                                                   
-
+#   USA   
 
 from __future__ import annotations
 import pathlib
