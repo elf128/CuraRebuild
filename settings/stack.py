@@ -33,15 +33,12 @@ import copy
 import uuid
 from typing import Any, Iterator
 
-from settings.schema import SCHEMA, SettingDef, LayerRole, get_default, exportable_keys, get_registry as _get_schema_registry
+from settings.schema import SettingDef, LayerRole, get_default, exportable_keys, get_registry as _get_schema_registry
 
 
 def _active_schema() -> dict:
-    """Return the live schema dict, falling back to hardcoded SCHEMA."""
-    try:
-        return _get_schema_registry().schema
-    except Exception:
-        return SCHEMA
+    """Return the live schema dict."""
+    return _get_schema_registry().schema
 
 
 # ---------------------------------------------------------------------------

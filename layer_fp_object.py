@@ -48,7 +48,7 @@ from __future__ import annotations
 import FreeCAD
 from FreeCAD import Console
 
-from settings.schema import SCHEMA, BY_CATEGORY, SettingDef, Category, LayerRole
+from settings.schema import SettingDef, Category, LayerRole, get_registry as _get_schema_registry
 from settings.stack  import BaseLayer, MachineLayer, UserLayer
 from Common          import Log, LogLevel
 
@@ -59,7 +59,7 @@ def _get_schema() -> dict:
         from settings.schema import get_registry as _gr
         return _gr().schema
     except Exception:
-        return SCHEMA
+        return {}
 
 
 # Categories shown for machine layers
@@ -159,7 +159,7 @@ class LayerFpObject:
 
         for cat in cats:
             group = _GROUP_LABELS.get( cat, cat )
-            for sdef in BY_CATEGORY.get( cat, [] ):
+            for sdef in _get_schema_registry().by_category.get( cat, [] ):
                 pname = _prop_name( sdef.key )
                 if pname in existing:
                     continue
@@ -263,7 +263,7 @@ class LayerFpObject:
 
     def sync_from_fp( self, fp: FreeCAD.DocumentObject ) -> None:
         """Read all FP properties back into the layer."""
-        for key, sdef in SCHEMA.items():
+        for key, sdef in _get_schema_registry().schema.items():
             pname = _prop_name( key )
             if not hasattr( fp, pname ):
                 continue

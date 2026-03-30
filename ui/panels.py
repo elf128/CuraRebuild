@@ -49,7 +49,7 @@ from PySide2.QtWidgets import (
 )
 
 from settings.schema import (
-    SCHEMA, BY_CATEGORY, CURA_SCHEMA, SettingDef, Category,
+    SettingDef, Category,
     get_registry as _get_schema_registry,
 )
 from settings.stack import (
@@ -2030,7 +2030,7 @@ class UserLayerPanel:
         # Show all settings — user layers can hold anything
         # Exclude EXPERIMENTAL (object-level mesh overrides)
         from settings.schema import Category as _Cat
-        _all_cats = [ c for c in BY_CATEGORY.keys() if c != _Cat.EXPERIMENTAL ]
+        _all_cats = [ c for c in _get_schema_registry().by_category.keys() if c != _Cat.EXPERIMENTAL ]
         # Use the BuildVolume's actual stack if provided, else build from registry
         if self._explicit_stack is not None:
             self._stack = self._explicit_stack

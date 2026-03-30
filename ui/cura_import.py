@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
-from settings.schema import CURA_SCHEMA, get_registry as _get_schema_registry
+from settings.schema import get_registry as _get_schema_registry
 from settings.stack  import MachineLayer
 from Common          import Log, LogLevel
 
@@ -370,11 +370,11 @@ class MachineInstance:
         m_imported = u_imported = skipped = 0
 
         # Use live registry (loaded from fdmprinter.def.json) if available,
-        # fall back to hardcoded CURA_SCHEMA
+        # fall back to hardcoded _get_schema_registry().cura_schema
         try:
             active_cura_schema = _get_schema_registry().cura_schema
         except Exception:
-            active_cura_schema = CURA_SCHEMA
+            active_cura_schema = _get_schema_registry().cura_schema
 
         for cura_key, value in self.flat_settings.items():
             sdef = active_cura_schema.get( cura_key )

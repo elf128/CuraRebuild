@@ -38,8 +38,8 @@ from `data/fdmprinter.def.json` at startup. It provides, for every setting:
 - `options` — list of valid strings for enum settings
 
 Access via `_active_schema()` in `stack.py`, or `_get_schema_registry()` in
-`panels.py`. Both return the live 575-setting registry, not the old hardcoded
-74-setting `SCHEMA` dict.
+`panels.py`. Both return the live 575-setting registry loaded from
+`fdmprinter.def.json`. The old hardcoded `SCHEMA` dict no longer exists.
 
 ### 1.3 The Registry
 
@@ -308,8 +308,9 @@ User clicks Save in MachineLayerPanel / UserLayerPanel
        ├─ self._editor.apply()
        │    └─ for key in self._dirty:
        │         layer.set(key, widget_value)   ← only dirty keys written
-       │         [if linked] flush_to_file()
+       │         [if linked] flush_to_file()    ← immediate write per key
        │    self._dirty.clear()
+       │    [if linked] flush_to_file()         ← also flush after all dirty keys written
        ├─ [if new layer] reg_fp.Proxy.add_layer(reg_fp, layer)
        │    └─ registry.add_machine_layer / add_user_layer
        │    └─ create_layer_fp(doc, layer, reg_fp)
@@ -363,13 +364,19 @@ no stack context is available. The five display states are:
 | `CALCULATED` | Blue italic | Not in layer, has `value_expr` (read-only) |
 | `EXPRESSION` | Blue bold + tint | Custom formula stored in `_expressions` |
 
-When opened from **Build Volume** context (stack available), two additional
+When opened from **Build Volume** context (stack available), three additional
 states apply:
 
 | State | Colour | Condition |
 |---|---|---|
-| `DISABLED` | Grey + bg tint | `enabled_expr` evaluates to `False` |
-| `OVERRIDDEN` | Strikethrough | Higher-priority layer wins for this key |
+| `DISABLED` | Grey + bg tint | `enabled_expr` evaluates to `False` (may be caused by a setting in another layer) |
+| `NOT_SET` | Grey italic | Not set in this layer; another layer controls the effective value |
+| `OVERRIDDEN` | Strikethrough | This layer sets the key, but a higher-priority layer also sets it |
+
+Tooltip always shows the current state name, and for `NOT_SET` / `OVERRIDDEN`
+shows which layer wins (`Winning layer: TPU`). For `DISABLED` it shows which
+setting causes the disabled condition and from which layer (`Disabled because:
+cool_fan_enabled = False (from TPU)`).
 
 ---
 
@@ -425,7 +432,8 @@ These guards prevent accidental layer pollution:
 │                         to FP properties; onChanged syncs FP→layer
 │
 ├── ui/
-│   ├── panels.py         LayerEditorWidget, MachineLayerPanel, UserLayerPanel
+│   ├── panels.py         LayerEditorWidget, MachineLayerPanel, UserLayerPanel,
+│   │                     BuildVolumePanel, RegistryPanel
 │   ├── cura_import.py    Import from Cura machine instances on disk
 │   └── profile_import.py Import from .curaprofile zip or sliced .gcode
 │

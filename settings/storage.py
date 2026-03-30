@@ -34,7 +34,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .schema import SCHEMA, SettingDef
+from .schema import get_registry as _get_schema_registry, SettingDef
 from .stack import (
     BaseLayer,
     MachineLayer,
@@ -194,7 +194,7 @@ class FreeCADBackend:
     def _write_layer_to_grp(layer: BaseLayer, grp) -> None:
         grp.SetString("__name__", layer.name)
         for key, value in layer.items():
-            sdef = SCHEMA.get(key)
+            sdef = _get_schema_registry().schema.get(key)
             if sdef is None:
                 continue
             if sdef.dtype == str:
@@ -209,7 +209,7 @@ class FreeCADBackend:
     @staticmethod
     def _read_layer_from_grp(layer: BaseLayer, grp) -> None:
         layer.name = grp.GetString("__name__", layer.name)
-        for key, sdef in SCHEMA.items():
+        for key, sdef in _get_schema_registry().schema.items():
             # Check presence: FreeCAD uses sentinel-value trick
             if sdef.dtype == str:
                 sentinel = "\x00__absent__\x00"
@@ -249,7 +249,7 @@ class FreeCADBackend:
     def _write_bool_layer_to_grp(layer: BaseLayer, grp) -> None:
         """Extra pass to properly store bool presence flags."""
         for key, value in layer.items():
-            sdef = SCHEMA.get(key)
+            sdef = _get_schema_registry().schema.get(key)
             if sdef and sdef.dtype == bool:
                 grp.SetBool(key, bool(value))
                 grp.SetString(f"__isset__{key}", "1")
