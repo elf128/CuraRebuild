@@ -219,6 +219,16 @@ def _build_axis_lines(length: float) -> coin.SoSeparator:
 # View Provider
 # ---------------------------------------------------------------------------
 
+_SENTINEL = object()   # used by _ensure_attrs to detect missing attrs
+
+
+def _restore_vp( state ):
+    """Module-level restore function used by __reduce__."""
+    obj = BuildVolumeViewProvider.__new__( BuildVolumeViewProvider )
+    obj.__setstate__( state )
+    return obj
+
+
 class BuildVolumeViewProvider:
     """
     Coin3D view provider for BuildVolume.
@@ -278,8 +288,11 @@ class BuildVolumeViewProvider:
             vp.DisplayMode = "Wireframe" if existing != "Wireframe" else "Flat Lines"
         except Exception:
             existing = "Flat Lines"
-        vp.addDisplayMode(self._root, "Wireframe")
-        vp.addDisplayMode(self._root, "Flat Lines")
+        try:
+            vp.addDisplayMode(self._root, "Wireframe")
+            vp.addDisplayMode(self._root, "Flat Lines")
+        except Exception:
+            pass  # May fail if VP not yet connected; execute() will recover
 
         # Refresh geometry and force viewport redraw
         if hasattr(vp, "Object"):
@@ -292,13 +305,19 @@ class BuildVolumeViewProvider:
         """Rebuild all Coin3D nodes from current fp dimensions."""
         self._ensure_attrs()
         if self._root is None:
-            # Proxy instance mismatch — attach() ran on a different instance.
-            # Re-attach using stored vp reference or fp.ViewObject.
             vp = self._vp or getattr( fp, "ViewObject", None )
             if vp is not None:
                 self.attach( vp )
             if self._root is None:
                 return
+        # Guard: _offset_transform may still be a dead dict after ensure_attrs
+        # if attach() hasn't rebuilt the scene yet
+        if self._is_dead( self._offset_transform ):
+            self._offset_transform = None
+            vp = self._vp or getattr( fp, "ViewObject", None )
+            if vp:
+                self.attach( vp )
+            return
 
         try:
             w = float(fp.Width)
@@ -383,7 +402,7 @@ class BuildVolumeViewProvider:
                     "PrinterOffsetX", "PrinterOffsetY"):
             self.update_geometry(fp)
         gcode_props = {
-            "ShowGCode", "GCodeLayer", "GCodeShowUpTo", "GCodeShowTravel",
+            "ShowGCode", "GCodeLayerFrom", "GCodeLayerTo", "GCodeShowTravel",
             "GCodeColourMode", "GCodeOutputFile",
             "GCodeShowWallOuter","GCodeShowWallInner","GCodeShowFill",
             "GCodeShowSkin","GCodeShowSupport","GCodeShowSkirt",
@@ -422,7 +441,7 @@ class BuildVolumeViewProvider:
                                 self._root.touch() 
 
         gcode_props = {
-            "ShowGCode", "GCodeLayer", "GCodeShowUpTo", "GCodeShowTravel",
+            "ShowGCode", "GCodeLayerFrom", "GCodeLayerTo", "GCodeShowTravel",
             "GCodeColourMode", "GCodeOutputFile",
             "GCodeShowWallOuter","GCodeShowWallInner","GCodeShowFill",
             "GCodeShowSkin","GCodeShowSupport","GCodeShowSkirt",
@@ -443,7 +462,8 @@ class BuildVolumeViewProvider:
         from Common import Log, LogLevel
 
         # Not ready yet — try to self-attach
-        if self._root is None:
+        if self._root is None or self._is_dead( self._gcode_renderer ):
+            self._gcode_renderer = None
             vp = self._vp or getattr( fp, "ViewObject", None )
             if vp is not None:
                 self.attach( vp )
@@ -546,15 +566,15 @@ class BuildVolumeViewProvider:
             vis = getattr( fp, f"GCodeShow{suffix}", True )
             self._gcode_renderer.set_feature_visible( feat_name, vis )
 
-        # Layer range — always call to force lazy geometry build
-        n   = self._gcode_renderer._gcode.layer_count()               if self._gcode_renderer._gcode else 0
-        cur = max( 0, min( getattr(fp,"GCodeLayer",0), n-1 ) )
+        # Layer range
+        n  = self._gcode_renderer._gcode.layer_count()              if self._gcode_renderer._gcode else 0
         if n == 0:
             return
-        if getattr( fp, "GCodeShowUpTo", True ):
-            self._gcode_renderer.show_up_to_layer( cur )
-        else:
-            self._gcode_renderer.show_only_layer( cur )
+        lo   = max( 0, getattr( fp, "GCodeLayerFrom", 0 ) )
+        hi_v = getattr( fp, "GCodeLayerTo", -1 )
+        hi   = ( n - 1 ) if hi_v < 0 else min( hi_v, n - 1 )
+        lo   = min( lo, hi )
+        self._gcode_renderer.show_range( lo, hi )
 
         if self._root:
                 self._root.touch()
@@ -597,9 +617,16 @@ class BuildVolumeViewProvider:
         return True
 
     def __getstate__( self ):
+        # Return ONLY a plain string — never pickle Coin3D/pivy objects.
+        # FreeCAD stores this via PropertyPythonObject; on restore it calls
+        # __setstate__ with whatever was returned here.
         return "BuildVolumeViewProvider"
 
     def __setstate__( self, state ):
+        # Reset to clean defaults — ignore whatever state was passed.
+        # Old documents may have pickled Coin3D objects as dead dicts;
+        # we discard all of that and rebuild from scratch in attach().
+        self.__dict__.clear()
         self._root               = None
         self._vp                 = None
         self._envelope_node      = None
@@ -612,9 +639,20 @@ class BuildVolumeViewProvider:
         self._loaded_gcode_mtime = 0
         self._offset_transform   = None
         self._attached           = False
+        self._modes_registered   = False
+
+    def __reduce__( self ):
+        # Force pickle to use only __getstate__/__setstate__, never __dict__.
+        # This prevents pivy Coin3D objects from being serialized.
+        return ( _restore_vp, ( self.__getstate__(), ) )
+
+    @staticmethod
+    def _is_dead( obj ) -> bool:
+        """Return True if obj is a stale pivy SWIG dict (e.g. {'this': None})."""
+        return isinstance( obj, dict )
 
     def _ensure_attrs( self ) -> None:
-        """Guard against missing attrs when restored from old documents."""
+        """Guard against missing attrs or dead Coin3D objects from restore."""
         for attr, default in [
             ( "_root",               None  ),
             ( "_vp",                 None  ),
@@ -628,7 +666,11 @@ class BuildVolumeViewProvider:
             ( "_loaded_gcode_mtime", 0     ),
             ( "_offset_transform",   None  ),
             ( "_attached",           False ),
-            ( "_modes_registered",    False ),
+            ( "_modes_registered",   False ),
         ]:
-            if not hasattr( self, attr ):
+            val = getattr( self, attr, _SENTINEL )
+            if val is _SENTINEL or self._is_dead( val ):
                 setattr( self, attr, default )
+        # If root is dead/None, force full re-attach
+        if self._root is None:
+            self._attached = False

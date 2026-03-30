@@ -81,6 +81,7 @@ class CuraRebuildWB( Workbench ):  # noqa: F821
 
     _SLICE_CMDS = [
         "CuraRebuild_Slice",
+        "CuraRebuild_ReloadGCode",
     ]
 
     def GetClassName( self ):
@@ -125,6 +126,7 @@ class CuraRebuildWB( Workbench ):  # noqa: F821
                 "CuraRebuild_AssignBodies",
                 "Separator",
                 "CuraRebuild_Slice",
+                "CuraRebuild_ReloadGCode",
                 "Separator",
                 "CuraRebuild_CreateMachineLayer",
                 "CuraRebuild_CreateUserLayer",
@@ -142,6 +144,7 @@ class CuraRebuildWB( Workbench ):  # noqa: F821
 
         Log( LogLevel.info, "[CuraRebuild] Activated.\n" )  # noqa: F821
         self._reload_( self._mod_ )
+
         return
 
     def Deactivated( self ):

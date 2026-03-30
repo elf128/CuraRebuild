@@ -33,8 +33,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from settings.schema import SCHEMA, LayerRole
-from settings.stack import SettingsStack
+from settings.schema import LayerRole
+from settings.stack import SettingsStack, _active_schema
 
 
 # CuraEngine definition format version
@@ -54,7 +54,7 @@ def _overrides_block(flat: dict[str, Any]) -> dict[str, dict]:
     """
     out = {}
     for key, value in flat.items():
-        sdef = SCHEMA.get(key)
+        sdef = _active_schema().get(key)
         if sdef is None or not sdef.cura_key:
             continue
         # Booleans: CuraEngine expects Python bool → JSON true/false
@@ -77,8 +77,8 @@ def _machine_flat(stack: SettingsStack) -> dict[str, Any]:
     effective = stack.effective()
     return {
         k: v for k, v in effective.items()
-        if SCHEMA.get(k) and SCHEMA[k].home_layer == LayerRole.MACHINE
-        and SCHEMA[k].cura_key
+        if _active_schema().get(k) and _active_schema()[k].home_layer == LayerRole.MACHINE
+        and _active_schema()[k].cura_key
     }
 
 
@@ -93,7 +93,7 @@ def _profile_flat(stack: SettingsStack) -> dict[str, Any]:
     # Walk user layers low → high so higher layers overwrite
     for layer in stack.user_layers:
         for key, value in layer.items():
-            sdef = SCHEMA.get(key)
+            sdef = _active_schema().get(key)
             if sdef and sdef.cura_key:
                 merged[key] = value
 
@@ -110,7 +110,7 @@ def _object_flat(stack: SettingsStack, body_id: str) -> dict[str, Any]:
     body_layer = stack.object_layer.body(body_id)
     out = {}
     for key, value in body_layer.items():
-        sdef = SCHEMA.get(key)
+        sdef = _active_schema().get(key)
         if sdef and sdef.cura_key:
             out[key] = value
     return out
@@ -309,8 +309,8 @@ def write_all_defs(
         # Exclude machine-home settings — those are already in machine.def.json
         profile_flat = {
             k: v for k, v in flat.items()
-            if SCHEMA.get(k) and SCHEMA[k].cura_key
-            and SCHEMA[k].home_layer != LayerRole.MACHINE
+            if _active_schema().get(k) and _active_schema()[k].cura_key
+            and _active_schema()[k].home_layer != LayerRole.MACHINE
         }
         ext_path = output_dir / f"extruder_{idx}.def.json"
         write_extruder_def( profile_flat, idx, ext_path, machine_path )
@@ -342,13 +342,19 @@ def build_cura_args(
     gcode_output: Path,
     extra_settings: dict[str, Any] | None = None,
     extra_defs: list[Path] | None = None,
+    per_body_configs: list[dict] | None = None,
 ) -> list[str]:
     """
     Build the subprocess argument list for CuraEngine 4.x / 5.x.
 
     CuraEngine slice -j machine.def.json -j extruder_0.def.json [-j extruder_1...]
-                     -l model.stl -o output.gcode
-                     [-s key=value ...]
+                     -l model.stl [-s extruder_nr=N] [-s infill_mesh=true] ...
+                     -o output.gcode
+
+    per_body_configs: list parallel to stl_paths. Each entry is a dict with:
+        extruder_nr       (int)
+        mesh_type         (str) — "normal"|"infill_mesh"|"cutting_mesh"|...
+        override_settings (dict[str,Any]) — flattened override layer values
     """
     args = [
         cura_bin,
@@ -360,14 +366,34 @@ def build_cura_args(
     for extra in (extra_defs or []):
         args += ["-j", str(extra)]
 
-    for stl in stl_paths:
+    for i, stl in enumerate(stl_paths):
         args += ["-l", str(stl)]
+
+        # Per-body settings appended immediately after -l
+        cfg = (per_body_configs or [])[i] if i < len(per_body_configs or []) else {}
+
+        extruder_nr = int( cfg.get( "extruder_nr", 0 ) )
+        mesh_type   = cfg.get( "mesh_type", "normal" )
+
+        # Switch to correct extruder for this mesh
+        args += ["-s", f"extruder_nr={extruder_nr}"]
+
+        # Only emit the mesh type flag that applies — CuraEngine defaults all to false
+        if mesh_type != "normal":
+            args += ["-s", f"{mesh_type}=true"]
+
+        # Override layer settings
+        for key, value in cfg.get( "override_settings", {} ).items():
+            if isinstance(value, bool):
+                args += ["-s", f"{key}={'true' if value else 'false'}"]
+            else:
+                args += ["-s", f"{key}={value}"]
 
     args += ["-o", str(gcode_output)]
 
-    # Any remaining settings that aren't in the def files
+    # Global extra settings
     for key, value in (extra_settings or {}).items():
-        sdef = SCHEMA.get(key)
+        sdef = _active_schema().get(key)
         cura_key = sdef.cura_key if sdef else key
         if not cura_key:
             continue

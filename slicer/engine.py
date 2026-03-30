@@ -150,6 +150,10 @@ def slice_build_volume(
 
     stl_paths: list[Path] = []
 
+    # Load per-body configs
+    from build_volume.build_volume import get_body_configs
+    body_configs = get_body_configs( build_volume_fp )
+
     for obj in bodies:
         log(f"Transforming '{obj.Name}' to printer space …")
 
@@ -161,6 +165,14 @@ def slice_build_volume(
         _export_shape_as_stl(transformed_shape, stl_path)
         stl_paths.append(stl_path)
         log(f"  → {stl_path}")
+
+        # Log body config
+        cfg = body_configs.get( obj.Name )
+        if cfg and ( cfg.mesh_type != "normal" or cfg.extruder_nr != 0
+                     or cfg.override_layer_id ):
+            log(f"    mesh_type={cfg.mesh_type}  "
+                f"extruder={cfg.extruder_nr}  "
+                f"override={'yes' if cfg.override_layer_id else 'no'}")
 
     # ------------------------------------------------------------------
     # 4. Write CuraEngine definition files
@@ -203,9 +215,12 @@ def slice_build_volume(
 
     # ------------------------------------------------------------------
     # 5. Resolve CuraEngine binary path
-    # Priority: explicit arg > BuildVolume.CuraEnginePath > auto-detect
+    # Priority: explicit arg > Registry.CuraEnginePath > auto-detect
     if not cura_bin:
-        cura_bin = getattr( build_volume_fp, "CuraEnginePath", "" ) or None
+        from registry_object import get_registry_fp
+        reg_fp   = get_registry_fp( build_volume_fp.Document )
+        cura_bin = getattr( reg_fp, "CuraEnginePath", "" ) if reg_fp else ""
+        cura_bin = cura_bin or None
     if not cura_bin:
         cura_bin = _resolve_cura_bin()
     if not cura_bin:
@@ -215,7 +230,7 @@ def slice_build_volume(
             log_path=None,
             error=(
                 "CuraEngine binary path is not configured. "
-                "Set CuraEnginePath on the BuildVolume object."
+                "Set CuraEnginePath on the CuraRebuild Settings object."
             ),
         )
 
@@ -240,6 +255,27 @@ def slice_build_volume(
     )
     profile_def = extruder_defs[0] if extruder_defs else def_paths["profile"]
 
+    # Build per-body config dicts for build_cura_args
+    from registry_object import get_registry
+    registry = get_registry( build_volume_fp.Document )
+    per_body = []
+    for obj in bodies:
+        cfg = body_configs.get( obj.Name )
+        override_settings = {}
+        if cfg and cfg.override_layer_id and registry:
+            # Resolve override layer settings (flat key→value, no schema lookup)
+            try:
+                ol = registry.get_user_layer( cfg.override_layer_id )
+                if ol:
+                    override_settings = dict( ol._data )
+            except Exception:
+                pass
+        per_body.append( {
+            "extruder_nr":       cfg.extruder_nr  if cfg else 0,
+            "mesh_type":         cfg.mesh_type     if cfg else "normal",
+            "override_settings": override_settings,
+        } )
+
     args = build_cura_args(
         cura_bin=cura_bin,
         machine_def=def_paths["machine"],
@@ -247,6 +283,7 @@ def slice_build_volume(
         stl_paths=stl_paths,
         gcode_output=gcode_path,
         extra_defs=extruder_defs[1:] if len(extruder_defs) > 1 else [],
+        per_body_configs=per_body,
     )
 
     log(f"Invoking CuraEngine: {' '.join(str(a) for a in args)}")

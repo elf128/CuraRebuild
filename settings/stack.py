@@ -503,10 +503,52 @@ class SettingsStack:
         Return a fully-resolved flat dict of all known settings for a given
         body (or the base print if body_id is None).
         This is the dict that cura_export.py will consume.
+
+        For settings with a value_expr that no layer explicitly sets,
+        the formula is evaluated against the resolved dict so derived
+        settings like support_line_distance reflect changes to their
+        source settings (e.g. support_infill_rate).
         """
+        from settings.expr_eval import eval_value
+        schema = _active_schema()
+
+        # First pass: resolve all values from layers / schema defaults
         result = {}
-        for key in _active_schema():
+        for key in schema:
             result[key] = self.get(key, body_id=body_id)
+
+        # Second pass: evaluate value_expr ONLY for numeric settings that:
+        # 1. No layer explicitly sets
+        # 2. Have a purely numeric formula (not referencing extruderValue etc.)
+        # 3. Return a proper numeric value (not a string)
+        # This handles derived settings like support_line_distance that depend
+        # on user-set values like support_infill_rate.
+        _NUMERIC_TYPES = ( int, float )
+        for key, sdef in schema.items():
+            if not sdef.value_expr:
+                continue
+            if sdef.dtype not in _NUMERIC_TYPES:
+                continue
+            # Skip if any layer explicitly sets this key
+            if any( l.has(key) for l in self._user ) or self._machine.has(key):
+                continue
+            # Skip formulas that reference extruder functions — these need
+            # the full Cura resolver and produce unreliable results here
+            expr = sdef.value_expr
+            if any( fn in expr for fn in (
+                "extruderValue", "extruderValues", "resolveOrValue",
+                "valueFromContainer", "valueFromExtruderIndex",
+                "defaultExtruderPosition", "anyExtruder",
+            ) ):
+                continue
+            computed = eval_value( expr, result, sdef.dtype )
+            if computed is None:
+                continue
+            # Only apply if computed value differs from schema default
+            # (avoids no-op updates and catches evaluation failures)
+            if computed != sdef.default:
+                result[key] = computed
+
         return result
 
     def effective_exportable(self, body_id: str | None = None) -> dict[str, Any]:

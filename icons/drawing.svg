@@ -10,7 +10,7 @@
    inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
    sodipodi:docname="drawing.svg"
    xml:space="preserve"
-   inkscape:export-filename="Tool.svg"
+   inkscape:export-filename="Import.svg"
    inkscape:export-xdpi="192"
    inkscape:export-ydpi="192"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
@@ -30,8 +30,8 @@
      units="px"
      inkscape:zoom="5.7082723"
      inkscape:cx="-19.007503"
-     inkscape:cy="63.94229"
-     inkscape:current-layer="layer5"
+     inkscape:cy="63.591921"
+     inkscape:current-layer="layer4"
      inkscape:showpageshadow="2"
      inkscape:deskcolor="#d1d1d1" /><defs
      id="defs2"><inkscape:perspective
@@ -247,7 +247,7 @@
      inkscape:groupmode="layer"
      id="layer4"
      inkscape:label="Settings"
-     style="display:none"><g
+     style="display:inline"><g
        id="g11806"><path
          id="path11890"
          style="display:inline;fill:#f3f3f3;stroke:none;stroke-width:0.0113546;stroke-opacity:1"
@@ -267,7 +267,7 @@
      inkscape:groupmode="layer"
      id="layer5"
      inkscape:label="Tool"
-     style="display:inline"><g
+     style="display:none"><g
        id="g4456"
        style="display:inline"><path
          id="path4538"

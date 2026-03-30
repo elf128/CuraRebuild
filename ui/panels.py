@@ -43,8 +43,9 @@ from PySide2.QtWidgets import (
     QLabel, QLineEdit, QDoubleSpinBox, QSpinBox,
     QCheckBox, QRadioButton, QComboBox, QGroupBox, QTabWidget,
     QPushButton, QListWidget, QListWidgetItem,
+    QTableWidget, QTableWidgetItem, QHeaderView,
     QScrollArea, QSizePolicy, QDialogButtonBox,
-    QTextEdit, QMessageBox, QInputDialog,
+    QDialog, QTextEdit, QMessageBox, QInputDialog,
 )
 
 from settings.schema import (
@@ -74,7 +75,8 @@ class SettingState:
     EXPRESSION:     str = "expression"      # custom expr stored        → BLUE BOLD
     # Build volume editor extras (used when stack context available)
     DISABLED:       str = "disabled"        # enabled_expr → False      → GREY BG
-    OVERRIDDEN:     str = "overridden"      # higher layer wins         → STRIKETHROUGH
+    OVERRIDDEN:     str = "overridden"      # layer sets it, higher wins → STRIKETHROUGH
+    NOT_SET:     str = "not_set"      # not set here, other layer controls it → GREY ITALIC
 
 # Colours — (foreground, background, bold, strikethrough, italic)
 _STATE_STYLE = {
@@ -85,6 +87,7 @@ _STATE_STYLE = {
     SettingState.EXPRESSION:     ( "#2255aa", "#eef4ff", True,  False, False ),
     SettingState.DISABLED:       ( "#aaaaaa", "#f5f5f5", False, False, True  ),
     SettingState.OVERRIDDEN:     ( "#888888", "",        False, True,  False ),
+    SettingState.NOT_SET:     ( "#888888", "",        False, False, True  ),
 }
 
 def _apply_row_style(
@@ -116,7 +119,8 @@ def _apply_row_style(
     disabled = state == SettingState.DISABLED
     widget.setEnabled( not disabled )
     if state in ( SettingState.SCHEMA_DEFAULT, SettingState.DISABLED,
-                  SettingState.OVERRIDDEN, SettingState.CALCULATED ):
+                  SettingState.OVERRIDDEN, SettingState.NOT_SET,
+                  SettingState.CALCULATED ):
         widget.setStyleSheet( "color: #888888;" )
     elif bg:
         widget.setStyleSheet( f"background-color: { bg };" )
@@ -137,19 +141,26 @@ def _make_scroll(inner: QWidget) -> QScrollArea:
 
 def _reset_widget( widget: QWidget, sdef: SettingDef ) -> None:
     """Reset a widget to the schema default value."""
-    default = sdef.default
+    _set_widget_value( widget, sdef, sdef.default )
+
+
+def _set_widget_value( widget: QWidget, sdef: SettingDef, value ) -> None:
+    """Set a widget to a specific value."""
     if isinstance( widget, QCheckBox ):
-        widget.setChecked( bool( default ) )
+        widget.setChecked( bool( value ) )
     elif isinstance( widget, QComboBox ):
-        idx = widget.findText( str( default ) )
+        idx = widget.findText( str( value ) )
         if idx >= 0:
             widget.setCurrentIndex( idx )
     elif isinstance( widget, QTextEdit ):
-        widget.setPlainText( str( default ) )
+        widget.setPlainText( str( value ) )
     elif isinstance( widget, ( QSpinBox, QDoubleSpinBox ) ):
-        widget.setValue( sdef.dtype( default ) )
+        try:
+            widget.setValue( sdef.dtype( value ) )
+        except Exception:
+            pass
     elif isinstance( widget, QLineEdit ):
-        widget.setText( str( default ) )
+        widget.setText( str( value ) )
 
 
 def _build_stack_for_layer( layer, registry ) -> object:
@@ -288,13 +299,15 @@ class LayerEditorWidget(QWidget):
         categories: list[str] | None = None,
         show_all_settings: bool = True,
         stack=None,
+        show_overrides: bool = True,
         parent=None,
     ):
         super().__init__( parent )
-        self._layer        = layer
-        self._stack        = stack          # None = standalone, set = build volume
-        self._categories   = categories
-        self._show_all     = show_all_settings
+        self._layer          = layer
+        self._stack          = stack          # None = standalone, set = build volume
+        self._show_overrides = show_overrides # False = registry mode, no stack context
+        self._categories     = categories
+        self._show_all       = show_all_settings
         self._widgets:     dict[str, QWidget] = {}
         self._labels:      dict[str, QLabel]  = {}
         self._row_widgets: dict[str, QWidget] = {}
@@ -325,6 +338,48 @@ class LayerEditorWidget(QWidget):
     def _invalidate_effective( self ) -> None:
         self._effective = {}
 
+    def _refresh_tooltip( self, key, sdef, state, label, widget ) -> None:
+        """Rebuild the tooltip for a single row after state change."""
+        _STATE_LABELS = {
+            SettingState.SCHEMA_DEFAULT: "Schema default (not set in any layer)",
+            SettingState.SET_DEFAULT:    "Set explicitly (= schema default value)",
+            SettingState.SET_OVERRIDE:   "Overriding default",
+            SettingState.CALCULATED:     "Calculated (formula)",
+            SettingState.EXPRESSION:     "Custom expression",
+            SettingState.DISABLED:       "Disabled",
+            SettingState.OVERRIDDEN:     "Overridden by higher layer (this layer sets it)",
+        }
+        tip_parts = []
+        if sdef.description:
+            tip_parts.append( sdef.description )
+        tip_parts.append( f"\nState: { _STATE_LABELS.get( state, state ) }" )
+        if state in ( SettingState.OVERRIDDEN, SettingState.NOT_SET ) and self._stack:
+            winning = self._stack.which_layer( key )
+            layer_name = winning.split( ":", 1 )[-1] if ":" in winning else winning
+            tip_parts.append( f"Winning layer: { layer_name }" )
+        if state == SettingState.DISABLED and self._stack and sdef.enabled_expr:
+            from settings.expr_eval import extract_dependencies
+            deps = extract_dependencies( sdef.enabled_expr )
+            disablers = []
+            for dep in deps:
+                dep_winning = self._stack.which_layer( dep )
+                if dep_winning != "schema_default":
+                    dep_layer = dep_winning.split( ":", 1 )[-1]
+                    dep_val   = self._stack.get( dep )
+                    disablers.append( f"{dep} = {dep_val!r} (from {dep_layer})" )
+            if disablers:
+                tip_parts.append( "Disabled because: " + ", ".join( disablers ) )
+        if sdef.value_expr:
+            tip_parts.append( f"\nFormula: { sdef.value_expr }" )
+        if sdef.enabled_expr:
+            tip_parts.append( f"Enabled when: { sdef.enabled_expr }" )
+        tip_html = ( "<div style='color:#1a1a1a;background:#fffbe6;"
+                     "font-style:normal;font-weight:normal;'>" +
+                     "<br>".join( tip_parts ).replace( "\n", "<br>" ) +
+                     "</div>" )
+        widget.setToolTip( tip_html )
+        label.setToolTip( tip_html )
+
     # ------------------------------------------------------------------
     # State computation
 
@@ -354,6 +409,11 @@ class LayerEditorWidget(QWidget):
         if layer_val is None:
             if sdef.value_expr:
                 return SettingState.CALCULATED
+            # Check if another layer controls this setting
+            if self._stack is not None and self._show_overrides:
+                winning = self._stack.which_layer( key )
+                if winning != "schema_default":
+                    return SettingState.NOT_SET
             return SettingState.SCHEMA_DEFAULT
 
         # Set in layer — compare to schema default
@@ -364,7 +424,8 @@ class LayerEditorWidget(QWidget):
         if self._stack is not None:
             winning = self._stack.which_layer( key )
             if winning != "schema_default" and self._layer.name not in winning:
-                return SettingState.OVERRIDDEN
+                if self._show_overrides:
+                    return SettingState.OVERRIDDEN
 
         if layer_val == schema_def:
             return SettingState.SET_DEFAULT
@@ -397,8 +458,9 @@ class LayerEditorWidget(QWidget):
         self._filter_combo = QComboBox()
         self._filter_combo.addItem( "Show all",               userData="all"      )
         self._filter_combo.addItem( "Hide disabled",          userData="no_dis"   )
-        self._filter_combo.addItem( "Hide overridden",        userData="no_ovr"   )
         self._filter_combo.addItem( "Only set in this layer", userData="only_set" )
+        if self._show_overrides:
+            self._filter_combo.addItem( "Hide overridden",    userData="no_ovr"   )
         self._filter_combo.currentIndexChanged.connect( lambda _: self._on_filter_changed() )
         toolbar.addWidget( QLabel( "Filter:" ) )
         toolbar.addWidget( self._filter_combo, stretch=1 )
@@ -555,27 +617,22 @@ class LayerEditorWidget(QWidget):
                             sdef.dtype,
                         )
                         current = computed if computed is not None else sdef.default
+                    elif self._stack is not None:
+                        # Show effective value from stack (may differ from schema
+                        # default if another layer overrides this setting)
+                        current = self._stack.get( sdef.key )
+                        if current is None:
+                            current = sdef.default
                     else:
                         current = sdef.default
 
                 widget = _make_setting_widget( sdef, current )
 
-                # Build rich tooltip: description + expressions
-                tip_parts = []
-                if sdef.description:
-                    tip_parts.append( sdef.description )
-                if sdef.value_expr:
-                    tip_parts.append( f"\nCalculated: { sdef.value_expr }" )
-                if sdef.enabled_expr:
-                    tip_parts.append( f"\nEnabled when: { sdef.enabled_expr }" )
-                widget.setToolTip( "\n".join( tip_parts ) )
-
-                # Label
+                # Label (tooltip built after state is known below)
                 label_text = sdef.label
                 if sdef.unit and not isinstance( widget, ( QSpinBox, QDoubleSpinBox ) ):
                     label_text += f" ({ sdef.unit })"
                 label = QLabel( label_text )
-                label.setToolTip( "\n".join( tip_parts ) )
 
                 # "×" clear button
                 clear_btn = QPushButton( "×" )
@@ -608,6 +665,48 @@ class LayerEditorWidget(QWidget):
                 # Colour state
                 state = self._compute_state( sdef.key )
                 _apply_row_style( label, widget, state )
+
+                # Build tooltip with state info — after state is known
+                _STATE_LABELS = {
+                    SettingState.SCHEMA_DEFAULT: "Schema default (not set in any layer)",
+                    SettingState.SET_DEFAULT:    "Set explicitly (= schema default value)",
+                    SettingState.SET_OVERRIDE:   "Overriding default",
+                    SettingState.CALCULATED:     "Calculated (formula)",
+                    SettingState.EXPRESSION:     "Custom expression",
+                    SettingState.DISABLED:       "Disabled",
+                    SettingState.OVERRIDDEN:     "Overridden by higher layer (this layer sets it)",
+                    SettingState.NOT_SET:     "Controlled by another layer (not set here)",
+                }
+                tip_parts = []
+                if sdef.description:
+                    tip_parts.append( sdef.description )
+                tip_parts.append( f"\nState: { _STATE_LABELS.get( state, state ) }" )
+                if state in ( SettingState.OVERRIDDEN, SettingState.NOT_SET ) and self._stack:
+                    winning = self._stack.which_layer( sdef.key )
+                    layer_name = winning.split( ":", 1 )[-1] if ":" in winning else winning
+                    tip_parts.append( f"Winning layer: { layer_name }" )
+                if state == SettingState.DISABLED and self._stack and sdef.enabled_expr:
+                    # Find which layer sets the disabling condition
+                    from settings.expr_eval import extract_dependencies
+                    deps = extract_dependencies( sdef.enabled_expr )
+                    disablers = []
+                    for dep in deps:
+                        dep_winning = self._stack.which_layer( dep )
+                        if dep_winning != "schema_default":
+                            dep_layer = dep_winning.split( ":", 1 )[-1]
+                            dep_val   = self._stack.get( dep )
+                            disablers.append( f"{dep} = {dep_val!r} (from {dep_layer})" )
+                    if disablers:
+                        tip_parts.append( "Disabled because: " + ", ".join( disablers ) )
+                if sdef.value_expr:
+                    tip_parts.append( f"\nFormula: { sdef.value_expr }" )
+                if sdef.enabled_expr:
+                    tip_parts.append( f"Enabled when: { sdef.enabled_expr }" )
+                # Use HTML tooltip so color is always black on white,
+                # regardless of the label's text color.
+                tip_html = "<div style='color:#1a1a1a;background:#fffbe6;"                            "font-style:normal;font-weight:normal;'>" +                            "<br>".join( tip_parts ).replace( "\n", "<br>" ) +                            "</div>"
+                widget.setToolTip( tip_html )
+                label.setToolTip( tip_html )
 
                 form.addRow( label, row_widget )
                 self._widgets[ sdef.key ]     = widget
@@ -703,6 +802,11 @@ class LayerEditorWidget(QWidget):
                     n += 1
                 except Exception:
                     pass
+            # Also import layer name if it has one
+            if getattr( tmp, "name", "" ):
+                self._layer.name = tmp.name
+                if hasattr( self, "_name_edit" ):
+                    self._name_edit.setText( tmp.name )
             self._invalidate_effective()
             self._rebuild_tabs(
                 self._categories, self._show_all,
@@ -1122,23 +1226,21 @@ class LayerEditorWidget(QWidget):
         if not path_str:
             return
 
-        self._layer.link( path_str )
-
-        # Write current data to the file immediately
-        if not pathlib.Path( path_str ).exists():
-            # New file — write current data
-            self._layer.flush_to_file()
-        else:
-            # Existing file — ask user whether to load from it or overwrite
+        if pathlib.Path( path_str ).exists():
+            # Ask intent BEFORE linking or writing anything
             reply = QMessageBox.question(
                 None,
                 "File exists",
                 f"{ pathlib.Path( path_str ).name } already exists.\n\n"
-                "Load settings FROM this file into the layer?\n"
-                "(No = overwrite file with current layer settings)",
-                QMessageBox.Yes | QMessageBox.No,
+                "Load settings FROM this file into the layer?\n\n"
+                "Yes = read file into layer\n"
+                "No  = overwrite file with current layer settings",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                 QMessageBox.Yes,
             )
+            if reply == QMessageBox.Cancel:
+                return
+            self._layer.link( path_str )
             if reply == QMessageBox.Yes:
                 ok = self._layer.reload_from_file()
                 if not ok:
@@ -1147,6 +1249,9 @@ class LayerEditorWidget(QWidget):
                         f"Could not read { path_str }"
                     )
                 else:
+                    # Also pull name from file
+                    if getattr( self._layer, "name", "" ) and hasattr( self, "_name_edit" ):
+                        self._name_edit.setText( self._layer.name )
                     self._invalidate_effective()
                     self._rebuild_tabs(
                         self._categories, self._show_all,
@@ -1155,6 +1260,10 @@ class LayerEditorWidget(QWidget):
                     )
             else:
                 self._layer.flush_to_file()
+        else:
+            # New file — link and write immediately, no question needed
+            self._layer.link( path_str )
+            self._layer.flush_to_file()
 
         # Persist link path on FP object
         self._persist_link()
@@ -1260,9 +1369,17 @@ class LayerEditorWidget(QWidget):
         from settings.schema import get_default
         schema_def = get_default( key )
         was_set    = self._layer.has( key )
+        layer_val  = self._layer.get( key )
 
-        if not was_set and validated == schema_def:
-            # User changed widget back to default and key wasn't in layer — ignore
+        # Get effective value — what the stack resolves to without this layer
+        effective_val = self._stack.get( key ) if self._stack else schema_def
+
+        if not was_set and validated == schema_def and validated == effective_val:
+            # Widget back to schema default, layer doesn't own it,
+            # and effective value is already schema default — ignore
+            pass
+        elif was_set and validated == layer_val:
+            # Value unchanged from what layer already has — no-op
             pass
         else:
             # Write to layer and mark dirty
@@ -1274,9 +1391,10 @@ class LayerEditorWidget(QWidget):
 
         self._invalidate_effective()
 
-        # Refresh this row
+        # Refresh this row — state and tooltip
         state = self._compute_state( key )
         _apply_row_style( label, widget, state )
+        self._refresh_tooltip( key, sdef, state, label, widget )
 
         # Refresh dependent rows
         for dep_key in schema.get_dependents( key ):
@@ -1311,14 +1429,22 @@ class LayerEditorWidget(QWidget):
 
         widget = self._widgets.get( key )
         label  = self._labels.get( key )
-        sdef   = SCHEMA.get( key )
+        sdef   = _get_schema_registry().schema.get( key )
         if widget is None or sdef is None:
             return
 
-        # Reset widget to schema default without re-triggering _on_widget_changed
+        # Reset widget to effective stack value (not schema default) so it
+        # reflects what the stack resolves to after this layer stops owning the key
         widget.blockSignals( True )
         try:
-            _reset_widget( widget, sdef )
+            if self._stack is not None:
+                effective_val = self._stack.get( sdef.key )
+                if effective_val is not None:
+                    _set_widget_value( widget, sdef, effective_val )
+                else:
+                    _reset_widget( widget, sdef )
+            else:
+                _reset_widget( widget, sdef )
         finally:
             widget.blockSignals( False )
         self._invalidate_effective()
@@ -1326,6 +1452,7 @@ class LayerEditorWidget(QWidget):
         if label:
             state = self._compute_state( key )
             _apply_row_style( label, widget, state )
+            self._refresh_tooltip( key, sdef, state, label, widget )
 
         # If filter hides cleared settings, rebuild the tab to remove the row
         current_filter = "all"
@@ -1364,6 +1491,10 @@ class LayerEditorWidget(QWidget):
         self._dirty.clear()
         # Persist ApplyTo selection
         self._save_apply_to()
+        # If layer is linked to a file, flush to disk so reopening
+        # doesn't revert to the old file contents
+        if hasattr( self._layer, "is_linked" ) and self._layer.is_linked():
+            self._layer.flush_to_file()
         return changed
 
 # ---------------------------------------------------------------------------
@@ -1443,6 +1574,7 @@ class MachineLayerPanel:
             categories=[ Category.MACHINE, Category.GCODE ],
             show_all_settings=True,
             stack=self._stack,
+            show_overrides=False,   # machine layers always from registry context
         )
         layout.addWidget( self._editor, stretch=1 )
 
@@ -1481,10 +1613,49 @@ class MachineLayerPanel:
         layout.addWidget( self.form )
 
         btns = QHBoxLayout()
+        btn_apply  = QPushButton( "Apply" )
         btn_ok     = QPushButton( "Save" )
         btn_cancel = QPushButton( "Cancel" )
+
+        def _apply():
+            self._layer.name = self._name_edit.text().strip() or self._layer.name
+            self._editor.apply()
+            from registry_object import flush_registry
+            flush_registry( self._doc )
+            # If opened from BuildVolume, trigger re-slice then refresh viewer
+            if self._bv_fp is not None:
+                try:
+                    if getattr( self._bv_fp, "EnableAutoSlice", False ):
+                        self._bv_fp.Proxy._run_slice( self._bv_fp )
+                    else:
+                        # Re-slice manually
+                        from registry_object import get_registry
+                        from slicer.engine import slice_build_volume
+                        from Common import Log, LogLevel
+                        reg = get_registry( self._doc )
+                        stack = self._bv_fp.Proxy.resolve_stack(
+                            self._bv_fp, reg )
+                        result = slice_build_volume( self._bv_fp, stack )
+                        if result.success:
+                            import shutil as _sh
+                            gcode_out = getattr(
+                                self._bv_fp, "GCodeOutputFile", "" )
+                            if gcode_out and result.gcode_path:
+                                _sh.copy2( str(result.gcode_path), gcode_out )
+                        vp = getattr( self._bv_fp, "ViewObject", None )
+                        if vp and hasattr( vp, "Proxy" ) and                                 hasattr( vp.Proxy, "update_gcode" ):
+                            vp.Proxy._loaded_gcode_mtime = 0
+                            vp.Proxy.update_gcode( self._bv_fp )
+                except Exception as e:
+                    from Common import Log, LogLevel
+                    Log( LogLevel.warning,
+                        f"[LayerEditor] Apply re-slice failed: {e}\n" )
+
+        btn_apply.clicked.connect( _apply )
         btn_ok.clicked.connect( dlg.accept )
         btn_cancel.clicked.connect( dlg.reject )
+        btns.addStretch()
+        btns.addWidget( btn_apply )
         btns.addWidget( btn_ok )
         btns.addWidget( btn_cancel )
         layout.addLayout( btns )
@@ -1830,11 +2001,17 @@ class UserLayerPanel:
         registry: SettingsRegistry,
         doc: FreeCAD.Document,
         existing_layer: UserLayer | None = None,
+        show_overrides: bool = False,
+        stack=None,
+        bv_fp=None,
     ):
-        self._registry = registry
-        self._doc      = doc
-        self._layer    = existing_layer or UserLayer(name="New Layer")
-        self._is_new   = existing_layer is None
+        self._registry       = registry
+        self._doc            = doc
+        self._layer          = existing_layer or UserLayer(name="New Layer")
+        self._is_new         = existing_layer is None
+        self._show_overrides = show_overrides
+        self._explicit_stack = stack   # stack from BuildVolume context
+        self._bv_fp          = bv_fp   # BuildVolume FP for GCode refresh
 
         self.form = QWidget()
         self._build_ui()
@@ -1854,12 +2031,17 @@ class UserLayerPanel:
         # Exclude EXPERIMENTAL (object-level mesh overrides)
         from settings.schema import Category as _Cat
         _all_cats = [ c for c in BY_CATEGORY.keys() if c != _Cat.EXPERIMENTAL ]
-        self._stack  = _build_stack_for_layer( self._layer, self._registry )
+        # Use the BuildVolume's actual stack if provided, else build from registry
+        if self._explicit_stack is not None:
+            self._stack = self._explicit_stack
+        else:
+            self._stack = _build_stack_for_layer( self._layer, self._registry )
         self._editor = LayerEditorWidget(
             self._layer,
             categories=_all_cats,
             show_all_settings=True,
             stack=self._stack,
+            show_overrides=self._show_overrides,
         )
         layout.addWidget( self._editor, stretch=1 )
 
@@ -1893,10 +2075,49 @@ class UserLayerPanel:
         layout.addWidget( self.form )
 
         btns = QHBoxLayout()
+        btn_apply  = QPushButton( "Apply" )
         btn_ok     = QPushButton( "Save" )
         btn_cancel = QPushButton( "Cancel" )
+
+        def _apply():
+            self._layer.name = self._name_edit.text().strip() or self._layer.name
+            self._editor.apply()
+            from registry_object import flush_registry
+            flush_registry( self._doc )
+            # If opened from BuildVolume, trigger re-slice then refresh viewer
+            if self._bv_fp is not None:
+                try:
+                    if getattr( self._bv_fp, "EnableAutoSlice", False ):
+                        self._bv_fp.Proxy._run_slice( self._bv_fp )
+                    else:
+                        # Re-slice manually
+                        from registry_object import get_registry
+                        from slicer.engine import slice_build_volume
+                        from Common import Log, LogLevel
+                        reg = get_registry( self._doc )
+                        stack = self._bv_fp.Proxy.resolve_stack(
+                            self._bv_fp, reg )
+                        result = slice_build_volume( self._bv_fp, stack )
+                        if result.success:
+                            import shutil as _sh
+                            gcode_out = getattr(
+                                self._bv_fp, "GCodeOutputFile", "" )
+                            if gcode_out and result.gcode_path:
+                                _sh.copy2( str(result.gcode_path), gcode_out )
+                        vp = getattr( self._bv_fp, "ViewObject", None )
+                        if vp and hasattr( vp, "Proxy" ) and                                 hasattr( vp.Proxy, "update_gcode" ):
+                            vp.Proxy._loaded_gcode_mtime = 0
+                            vp.Proxy.update_gcode( self._bv_fp )
+                except Exception as e:
+                    from Common import Log, LogLevel
+                    Log( LogLevel.warning,
+                        f"[LayerEditor] Apply re-slice failed: {e}\n" )
+
+        btn_apply.clicked.connect( _apply )
         btn_ok.clicked.connect( dlg.accept )
         btn_cancel.clicked.connect( dlg.reject )
+        btns.addStretch()
+        btns.addWidget( btn_apply )
         btns.addWidget( btn_ok )
         btns.addWidget( btn_cancel )
         layout.addLayout( btns )
@@ -1997,6 +2218,38 @@ class RegistryPanel:
         user_vbox.addLayout(u_btns)
         layout.addWidget(user_grp)
 
+        # --- CuraEngine path ---
+        engine_grp  = QGroupBox( "CuraEngine" )
+        engine_form = QFormLayout( engine_grp )
+
+        cura_row = QHBoxLayout()
+        self._cura_edit = QLineEdit(
+            getattr( self._fp, "CuraEnginePath", "" )
+        )
+        self._cura_edit.setPlaceholderText( "Leave empty to auto-detect…" )
+        self._cura_edit.editingFinished.connect( self._save_cura_path )
+        btn_cura = QPushButton( "…" )
+        btn_cura.setFixedWidth( 28 )
+        btn_cura.clicked.connect( self._browse_cura )
+        cura_row.addWidget( self._cura_edit, stretch=1 )
+        cura_row.addWidget( btn_cura )
+        engine_form.addRow( "Binary path:", cura_row )
+        layout.addWidget( engine_grp )
+
+    def _save_cura_path( self ) -> None:
+        """Save CuraEngine path immediately to the registry FP."""
+        if hasattr( self._fp, "CuraEnginePath" ):
+            self._fp.CuraEnginePath = self._cura_edit.text().strip()
+
+    def _browse_cura( self ) -> None:
+        from PySide2.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            None, "Select CuraEngine binary", "", "Executable (*)"
+        )
+        if path:
+            self._cura_edit.setText( path )
+            self._save_cura_path()
+
     # ------------------------------------------------------------------
 
     def _refresh_machine_list(self) -> None:
@@ -2038,6 +2291,7 @@ class RegistryPanel:
         panel = MachineLayerPanel( self._registry, self._doc, existing_layer=layer )
         if panel.show_as_dialog():
             self._refresh_machine_list()
+            self._refresh_user_list()
 
     def _delete_machine( self ) -> None:
         lid = self._selected_machine_id()
@@ -2068,6 +2322,7 @@ class RegistryPanel:
         panel = UserLayerPanel( self._registry, self._doc, existing_layer=layer )
         if panel.show_as_dialog():
             self._refresh_user_list()
+            self._refresh_machine_list()
 
     def _delete_user( self ) -> None:
         lid = self._selected_user_id()
@@ -2086,6 +2341,8 @@ class RegistryPanel:
             self._refresh_user_list()
 
     def accept(self) -> bool:
+        if hasattr( self._fp, "CuraEnginePath" ):
+            self._fp.CuraEnginePath = self._cura_edit.text().strip()
         flush_registry(self._doc)
         FreeCADGui.Control.closeDialog()
         return True
@@ -2264,7 +2521,7 @@ class BuildVolumePanel:
         layout.addLayout( machine_row )
 
         # --- User layer stack ---
-        stack_grp  = QGroupBox( "User Layer Stack  (top = highest priority)" )
+        stack_grp  = QGroupBox( "User Layer Stack  (bottom = highest priority)" )
         stack_vbox = QVBoxLayout( stack_grp )
 
         self._stack_list = QListWidget()
@@ -2292,19 +2549,6 @@ class BuildVolumePanel:
         slice_grp  = QGroupBox( "Slicing" )
         slice_form = QFormLayout( slice_grp )
 
-        # CuraEngine binary
-        cura_row = QHBoxLayout()
-        self._cura_edit = QLineEdit(
-            getattr( self._fp, "CuraEnginePath", "" )
-        )
-        self._cura_edit.setPlaceholderText( "Auto-detect if empty…" )
-        btn_cura = QPushButton( "…" )
-        btn_cura.setFixedWidth( 28 )
-        btn_cura.clicked.connect( self._browse_cura )
-        cura_row.addWidget( self._cura_edit, stretch=1 )
-        cura_row.addWidget( btn_cura )
-        slice_form.addRow( "CuraEngine:", cura_row )
-
         gcode_row = QHBoxLayout()
         self._gcode_edit = QLineEdit(
             getattr( self._fp, "GCodeOutputFile", "" )
@@ -2331,17 +2575,35 @@ class BuildVolumePanel:
         # --- Assigned bodies ---
         body_grp  = QGroupBox( "Assigned Bodies" )
         body_vbox = QVBoxLayout( body_grp )
-        self._body_list = QListWidget()
+
+        self._body_table = QTableWidget()
+        self._body_table.setColumnCount( 4 )
+        self._body_table.setHorizontalHeaderLabels(
+            ["Body", "Extruder", "Mesh Type", "Override Layer"] )
+        self._body_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.Stretch )
+        self._body_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.Stretch )
+        self._body_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows )
+        self._body_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers )
+        self._body_table.verticalHeader().setVisible( False )
+        self._body_table.cellDoubleClicked.connect(
+            lambda row, col: self._configure_body() )
         self._refresh_body_list()
-        body_vbox.addWidget( self._body_list )
+        body_vbox.addWidget( self._body_table )
 
         body_btns = QHBoxLayout()
-        btn_add_body = QPushButton( "Add Selected…" )
-        btn_rem_body = QPushButton( "Remove" )
+        btn_add_body   = QPushButton( "Add Selected…" )
+        btn_rem_body   = QPushButton( "Remove" )
+        btn_cfg_body   = QPushButton( "Configure…" )
         btn_add_body.clicked.connect( self._add_body )
         btn_rem_body.clicked.connect( self._remove_body )
+        btn_cfg_body.clicked.connect( self._configure_body )
         body_btns.addWidget( btn_add_body )
         body_btns.addWidget( btn_rem_body )
+        body_btns.addWidget( btn_cfg_body )
         body_vbox.addLayout( body_btns )
         layout.addWidget( body_grp )
 
@@ -2362,12 +2624,39 @@ class BuildVolumePanel:
                 pass
 
     def _refresh_body_list( self ) -> None:
-        self._body_list.clear()
-        for body in self._fp.Proxy.get_assigned_body_objects( self._fp ):
-            if body:
-                self._body_list.addItem(
-                    QListWidgetItem( getattr( body, "Label", body.Name ) )
-                )
+        from build_volume.build_volume import get_body_configs, MESH_TYPES
+        configs = get_body_configs( self._fp )
+        bodies  = [ b for b in
+                    self._fp.Proxy.get_assigned_body_objects( self._fp )
+                    if b is not None ]
+
+        self._body_table.setRowCount( len(bodies) )
+        for row, body in enumerate(bodies):
+            cfg = configs.get( body.Name )
+
+            # Body name — prefer Label, fall back to Name
+            label = getattr( body, "Label", "" ) or body.Name
+            item = QTableWidgetItem( label )
+            item.setData( QtCore.Qt.UserRole, body.Name )
+            self._body_table.setItem( row, 0, item )
+
+            # Extruder
+            ext = str( cfg.extruder_nr ) if cfg else "0"
+            self._body_table.setItem( row, 1, QTableWidgetItem( ext ) )
+
+            # Mesh type
+            mt = cfg.mesh_type if cfg else "normal"
+            self._body_table.setItem( row, 2, QTableWidgetItem( mt ) )
+
+            # Override layer
+            ol_label = ""
+            if cfg and cfg.override_layer_id:
+                try:
+                    ol = self._registry.get_user_layer( cfg.override_layer_id )
+                    ol_label = ol.name
+                except Exception:
+                    ol_label = f"<missing: {cfg.override_layer_id[:8]}>"
+            self._body_table.setItem( row, 3, QTableWidgetItem( ol_label ) )
 
     def _current_user_ids( self ) -> list[str]:
         return [
@@ -2406,18 +2695,36 @@ class BuildVolumePanel:
         lid = self._stack_list.item( row ).data( QtCore.Qt.UserRole )
         try:
             layer = self._registry.get_user_layer( lid )
-            # Build stack context for colour differentiation
-            from settings.stack import SettingsStack, MachineLayer as ML
-            machines = self._registry.all_machine_layers()
-            users    = self._registry.all_user_layers()
-            stack    = SettingsStack( machines[0], users ) if machines else None
+            # Build the actual BuildVolume stack for override colour context
+            stack = self._fp.Proxy.resolve_stack( self._fp, self._registry )
             panel = UserLayerPanel( self._registry, self._doc,
-                                    existing_layer=layer )
+                                    existing_layer=layer,
+                                    show_overrides=True,
+                                    stack=stack,
+                                    bv_fp=self._fp )
             panel.show_as_dialog()
-            # Refresh label after edit
-            self._stack_list.item( row ).setText( self._layer_label( layer ) )
+            # Refresh all layer labels — move operations affect other layers too
+            self._refresh_stack_list()
+            # Trigger GCode rebuild since settings changed
+            vp = getattr( self._fp, "ViewObject", None )
+            if vp and hasattr( vp, "Proxy" ) and hasattr( vp.Proxy, "update_gcode" ):
+                vp.Proxy._loaded_gcode_mtime = 0
+                vp.Proxy.update_gcode( self._fp )
         except Exception as e:
             QMessageBox.warning( self.form, "Edit failed", str( e ) )
+
+    def _persist_layer_order( self ) -> None:
+        """Write current list order back to fp.UserLayers."""
+        ids = self._current_user_ids()
+        # Build id → fp_obj map from the existing UserLayers list
+        existing = list( getattr( self._fp, "UserLayers", None ) or [] )
+        by_id = {
+            getattr( fp_obj, "LayerId", None ): fp_obj
+            for fp_obj in existing
+        }
+        fps = [ by_id[ lid ] for lid in ids if lid in by_id ]
+        if len( fps ) == len( ids ):
+            self._fp.Proxy.set_user_layer_fps( self._fp, fps )
 
     def _move_up( self ) -> None:
         row = self._stack_list.currentRow()
@@ -2425,6 +2732,7 @@ class BuildVolumePanel:
             item = self._stack_list.takeItem( row )
             self._stack_list.insertItem( row - 1, item )
             self._stack_list.setCurrentRow( row - 1 )
+            self._persist_layer_order()
 
     def _move_down( self ) -> None:
         row = self._stack_list.currentRow()
@@ -2432,6 +2740,7 @@ class BuildVolumePanel:
             item = self._stack_list.takeItem( row )
             self._stack_list.insertItem( row + 1, item )
             self._stack_list.setCurrentRow( row + 1 )
+            self._persist_layer_order()
 
     def _browse_cura( self ) -> None:
         from PySide2.QtWidgets import QFileDialog
@@ -2497,8 +2806,89 @@ class BuildVolumePanel:
         self._refresh_body_list()
         self._doc.recompute()
 
+    def _configure_body( self ) -> None:
+        """Open per-body config dialog for the selected row."""
+        from build_volume.build_volume import (
+            get_body_configs, set_body_config, BodyConfig, MESH_TYPES
+        )
+        row = self._body_table.currentRow()
+        if row < 0:
+            return
+        body_name = self._body_table.item( row, 0 ).data( QtCore.Qt.UserRole )
+        configs   = get_body_configs( self._fp )
+        cfg       = configs.get( body_name, BodyConfig() )
+
+
+        dlg = QDialog( self.form )
+        dlg.setWindowTitle( f"Configure: {body_name}" )
+        layout = QVBoxLayout( dlg )
+        form   = QFormLayout()
+
+        # Extruder
+        ext_spin = QSpinBox()
+        ext_spin.setMinimum( 0 )
+        ext_spin.setMaximum( 7 )
+        ext_spin.setValue( cfg.extruder_nr )
+        form.addRow( "Extruder:", ext_spin )
+
+        # Mesh type
+        mt_combo = QComboBox()
+        mt_combo.addItems( MESH_TYPES )
+        idx = MESH_TYPES.index( cfg.mesh_type ) if cfg.mesh_type in MESH_TYPES else 0
+        mt_combo.setCurrentIndex( idx )
+        form.addRow( "Mesh type:", mt_combo )
+
+        # Override layer
+        ol_combo = QComboBox()
+        ol_combo.addItem( "— none —", userData="" )
+        for layer in self._registry.all_user_layers():
+            ol_combo.addItem( layer.name, userData=layer.id )
+        cur_idx = 0
+        for i in range( ol_combo.count() ):
+            if ol_combo.itemData( i, QtCore.Qt.UserRole ) == cfg.override_layer_id:
+                cur_idx = i; break
+        ol_combo.setCurrentIndex( cur_idx )
+
+        # Create new override layer button
+        btn_new_ol = QPushButton( "New Override Layer…" )
+        def _new_layer():
+            from PySide2.QtWidgets import QInputDialog
+            name, ok = QInputDialog.getText(
+                dlg, "New Override Layer",
+                f"Layer name for '{body_name}':",
+                text=f"{body_name} overrides"
+            )
+            if ok and name.strip():
+                reg_fp = self._doc.getObject(
+                    "__CuraRebuildRegistry__" )
+                if reg_fp and hasattr( reg_fp, "Proxy" ):
+                    new_layer = reg_fp.Proxy.create_user_layer(
+                        reg_fp, name.strip() )
+                    ol_combo.addItem( new_layer.name, userData=new_layer.id )
+                    ol_combo.setCurrentIndex( ol_combo.count() - 1 )
+        btn_new_ol.clicked.connect( _new_layer )
+
+        form.addRow( "Override layer:", ol_combo )
+        form.addRow( "", btn_new_ol )
+        layout.addLayout( form )
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel )
+        btns.accepted.connect( dlg.accept )
+        btns.rejected.connect( dlg.reject )
+        layout.addWidget( btns )
+
+        if dlg.exec_() == QDialog.Accepted:
+            new_cfg = BodyConfig(
+                mesh_type         = mt_combo.currentText(),
+                extruder_nr       = ext_spin.value(),
+                override_layer_id = ol_combo.currentData( QtCore.Qt.UserRole ) or "",
+            )
+            set_body_config( self._fp, body_name, new_cfg )
+            self._refresh_body_list()
+
     def _remove_body( self ) -> None:
-        row = self._body_list.currentRow()
+        row = self._body_table.currentRow()
         if row < 0:
             return
         bodies = self._fp.Proxy.get_assigned_body_objects( self._fp )
@@ -2512,8 +2902,6 @@ class BuildVolumePanel:
 
         # Save slicing settings — properties may not exist on old volumes
         # (added by onDocumentRestored, but guard anyway)
-        if hasattr( self._fp, "CuraEnginePath" ):
-            self._fp.CuraEnginePath  = self._cura_edit.text().strip()
         if hasattr( self._fp, "GCodeOutputFile" ):
             self._fp.GCodeOutputFile = self._gcode_edit.text().strip()
         if hasattr( self._fp, "EnableAutoSlice" ):

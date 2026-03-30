@@ -288,15 +288,15 @@ class CmdCreateMachineLayer:
 
 
 # ---------------------------------------------------------------------------
-# G-Code Viewer
+# G-Code Reload
 # ---------------------------------------------------------------------------
 
-class CmdShowGCode:
+class CmdReloadGCode:
     def GetResources( self ):
         return {
             "Pixmap":   "Path-Topo-Shape",
-            "MenuText": "Show G-Code",
-            "ToolTip":  "Visualise the sliced G-code in the 3D viewport",
+            "MenuText": "Reload G-Code",
+            "ToolTip":  "Re-parse the G-code file and refresh the 3D viewport",
         }
 
     def IsActive( self ):
@@ -305,15 +305,13 @@ class CmdShowGCode:
             return False
         for obj in doc.Objects:
             if getattr( getattr(obj,"Proxy",None), "Type", "" ) == "BuildVolume":
-                return True
+                return bool( getattr( obj, "GCodeOutputFile", "" ) )
         return False
 
     def Activated( self ):
         doc = FreeCAD.ActiveDocument
         if not doc:
             return
-
-        # Find the active BuildVolume (selection first, then first in doc)
         bv_fp = None
         sel = FreeCADGui.Selection.getSelection( doc.Name )
         for obj in sel:
@@ -323,28 +321,12 @@ class CmdShowGCode:
             for obj in doc.Objects:
                 if getattr( getattr(obj,"Proxy",None), "Type", "" ) == "BuildVolume":
                     bv_fp = obj; break
-
         if bv_fp is None:
-            from PySide2.QtWidgets import QMessageBox
-            QMessageBox.warning( None, "No BuildVolume",
-                "No BuildVolume found in the document." )
             return
-
-        # If no GCodeOutputFile set, ask user
-        gcode_path = getattr( bv_fp, "GCodeOutputFile", "" )
-        if not gcode_path:
-            from PySide2.QtWidgets import QFileDialog
-            path, _ = QFileDialog.getOpenFileName(
-                None, "Select G-code file", "",
-                "G-code (*.gcode *.g *.gco);;All files (*)"
-            )
-            if not path:
-                return
-            bv_fp.GCodeOutputFile = path
-
-        from ui.gcode_panel import GCodeViewerPanel
-        panel = GCodeViewerPanel( bv_fp )
-        FreeCADGui.Control.showDialog( panel )
+        vp = getattr( bv_fp, "ViewObject", None )
+        if vp and hasattr( vp, "Proxy" ) and hasattr( vp.Proxy, "update_gcode" ):
+            vp.Proxy._loaded_gcode_mtime = 0
+            vp.Proxy.update_gcode( bv_fp )
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +343,7 @@ def register_all():
     FreeCADGui.addCommand( "CuraRebuild_EditBuildVolume",    CmdEditBuildVolume() )
     FreeCADGui.addCommand( "CuraRebuild_AssignBodies",       CmdAssignBodies() )
     FreeCADGui.addCommand( "CuraRebuild_Slice",              CmdSlice() )
-    FreeCADGui.addCommand( "CuraRebuild_ShowGCode",          CmdShowGCode() )
+    FreeCADGui.addCommand( "CuraRebuild_ReloadGCode",        CmdReloadGCode() )
     FreeCADGui.addCommand( "CuraRebuild_CreateUserLayer",    CmdCreateUserLayer() )
     FreeCADGui.addCommand( "CuraRebuild_CreateMachineLayer", CmdCreateMachineLayer() )
     _registered = True
@@ -396,7 +378,7 @@ def Reload():
         "gcode_viewer.parser",
         "gcode_viewer.renderer",
         "ui.cura_import",
-        "ui.gcode_panel",
+
         "ui.panels",
         "slicer.engine",
     ]

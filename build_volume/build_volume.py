@@ -48,6 +48,80 @@ if TYPE_CHECKING:
 _GRP_VOLUME    = "Build Volume"
 _GRP_STACK     = "Settings Stack"
 _GRP_BODIES    = "Assigned Bodies"
+
+MESH_TYPES = [
+    "normal",
+    "infill_mesh",
+    "cutting_mesh",
+    "support_mesh",
+    "anti_overhang_mesh",
+]
+
+
+class BodyConfig:
+    """Per-body slicer configuration stored in BuildVolume.BodyConfigJson."""
+
+    __slots__ = ( "mesh_type", "extruder_nr", "override_layer_id" )
+
+    def __init__(
+        self,
+        mesh_type:         str = "normal",
+        extruder_nr:       int = 0,
+        override_layer_id: str = "",
+    ):
+        self.mesh_type         = mesh_type
+        self.extruder_nr       = extruder_nr
+        self.override_layer_id = override_layer_id
+
+    def to_dict( self ) -> dict:
+        return {
+            "mesh_type":         self.mesh_type,
+            "extruder_nr":       self.extruder_nr,
+            "override_layer_id": self.override_layer_id,
+        }
+
+    @classmethod
+    def from_dict( cls, d: dict ) -> "BodyConfig":
+        return cls(
+            mesh_type         = d.get( "mesh_type",         "normal" ),
+            extruder_nr       = int( d.get( "extruder_nr",  0        ) ),
+            override_layer_id = d.get( "override_layer_id", ""       ),
+        )
+
+
+def get_body_configs( fp: "FreeCAD.DocumentObject" ) -> dict[str, BodyConfig]:
+    """Return {body.Name: BodyConfig} from BuildVolume.BodyConfigJson."""
+    import json
+    try:
+        raw = getattr( fp, "BodyConfigJson", "{}" ) or "{}"
+        data = json.loads( raw )
+        return { k: BodyConfig.from_dict( v ) for k, v in data.items() }
+    except Exception:
+        return {}
+
+
+def set_body_configs(
+    fp:      "FreeCAD.DocumentObject",
+    configs: dict[str, BodyConfig],
+) -> None:
+    """Write {body.Name: BodyConfig} to BuildVolume.BodyConfigJson."""
+    import json
+    fp.BodyConfigJson = json.dumps(
+        { k: v.to_dict() for k, v in configs.items() },
+        ensure_ascii=False,
+    )
+
+
+def get_body_config( fp, body_name: str ) -> BodyConfig:
+    """Return BodyConfig for a single body, defaulting if not set."""
+    return get_body_configs( fp ).get( body_name, BodyConfig() )
+
+
+def set_body_config( fp, body_name: str, cfg: BodyConfig ) -> None:
+    """Update BodyConfig for a single body."""
+    configs = get_body_configs( fp )
+    configs[ body_name ] = cfg
+    set_body_configs( fp, configs )
 _GRP_TRANSFORM = "Transform"
 
 
@@ -109,6 +183,13 @@ class BuildVolume:
                 "FreeCAD bodies assigned to this build volume"
             )
 
+        if "BodyConfigJson" not in existing:
+            fp.addProperty(
+                "App::PropertyString", "BodyConfigJson", _GRP_BODIES,
+                "Per-body mesh type, extruder, and override layer (JSON)"
+            ).BodyConfigJson = "{}"
+        fp.setEditorMode( "BodyConfigJson", 2 )   # hidden
+
         # Placement — makes the object movable in the viewport
         if "Placement" not in existing:
             fp.addProperty(
@@ -149,12 +230,6 @@ class BuildVolume:
                 "Automatically re-slice when settings or bodies change"
             ).EnableAutoSlice = False
 
-        if "CuraEnginePath" not in existing:
-            fp.addProperty(
-                "App::PropertyFile", "CuraEnginePath", _GRP_SLICE,
-                "Path to CuraEngine binary (leave empty to auto-detect)"
-            ).CuraEnginePath = ""
-
         # G-code viewer properties
         _GRP_VIZ = "G-Code Viewer"
         if "ShowGCode" not in existing:
@@ -163,17 +238,17 @@ class BuildVolume:
                 "Show G-code toolpaths in the 3D viewport"
             ).ShowGCode = True
 
-        if "GCodeLayer" not in existing:
+        if "GCodeLayerFrom" not in existing:
             fp.addProperty(
-                "App::PropertyInteger", "GCodeLayer", _GRP_VIZ,
-                "Layer to display"
-            ).GCodeLayer = 0
+                "App::PropertyInteger", "GCodeLayerFrom", _GRP_VIZ,
+                "First layer to display (0 = first)"
+            ).GCodeLayerFrom = 0
 
-        if "GCodeShowUpTo" not in existing:
+        if "GCodeLayerTo" not in existing:
             fp.addProperty(
-                "App::PropertyBool", "GCodeShowUpTo", _GRP_VIZ,
-                "Show all layers up to GCodeLayer (cumulative)"
-            ).GCodeShowUpTo = True
+                "App::PropertyInteger", "GCodeLayerTo", _GRP_VIZ,
+                "Last layer to display (-1 = all)"
+            ).GCodeLayerTo = -1
 
         if "GCodeShowTravel" not in existing:
             fp.addProperty(
@@ -252,7 +327,7 @@ class BuildVolume:
         # Notify view provider of GCode property changes directly
         # (updateData is not called for property changes in App::FeaturePython)
         gcode_props = {
-            "ShowGCode", "GCodeLayer", "GCodeShowUpTo", "GCodeShowTravel",
+            "ShowGCode", "GCodeLayerFrom", "GCodeLayerTo", "GCodeShowTravel",
             "GCodeColourMode", "GCodeOutputFile",
             "GCodeShowWallOuter","GCodeShowWallInner","GCodeShowFill",
             "GCodeShowSkin","GCodeShowSupport","GCodeShowSkirt",
@@ -447,6 +522,10 @@ class BuildVolume:
             if lid
         ]
         user_layers = [ l for l in user_layers if l is not None ]
+        # SettingsStack treats index -1 as highest priority.
+        # UserLayers list order: index 0 = top of UI = lowest priority,
+        # last item = bottom of UI = highest priority.
+        # No reversal needed — bottom of UI list = highest priority.
         return SettingsStack( machine, user_layers )
 
     # ------------------------------------------------------------------

@@ -69,6 +69,12 @@ class RegistryObject:
             ).RegistryJson = "{}"
         fp.setEditorMode( "RegistryJson", 2 )   # hidden
 
+        if not hasattr( fp, "CuraEnginePath" ):
+            fp.addProperty(
+                "App::PropertyFile", "CuraEnginePath", _GRP,
+                "Path to the CuraEngine binary"
+            ).CuraEnginePath = ""
+
         # GroupExtension is added in __init__ before Proxy is set.
 
     # ------------------------------------------------------------------
@@ -270,6 +276,17 @@ class RegistryObject:
                 )
             except Exception:
                 pass
+
+        # Migrate CuraEnginePath from BuildVolume if registry doesn't have it yet
+        if not getattr( fp, "CuraEnginePath", "" ):
+            for obj in fp.Document.Objects:
+                old_path = getattr( obj, "CuraEnginePath", "" )
+                if old_path:
+                    fp.CuraEnginePath = old_path
+                    Log( LogLevel.info,
+                        f"[CuraRebuildRegistry] Migrated CuraEnginePath "
+                        f"from '{obj.Name}'\n" )
+                    break
 
         Log( LogLevel.info,
             f"[CuraRebuildRegistry] Restored: "

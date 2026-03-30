@@ -345,15 +345,18 @@ class GCodeRenderer:
     def set_feature_visible( self, feature_name: str, visible: bool ) -> None:
         self._feature_vis[feature_name] = visible
 
+    def show_range( self, lo: int, hi: int ) -> None:
+        """Show layers lo..hi inclusive."""
+        self._last_range = ( lo, hi )
+        self._show_range( ( lo, hi ) )
+
     def show_up_to_layer( self, layer_idx: int ) -> None:
         """Show all layers 0..layer_idx."""
-        self._last_range = (0, layer_idx)
-        self._show_range( (0, layer_idx) )
+        self.show_range( 0, layer_idx )
 
     def show_only_layer( self, layer_idx: int ) -> None:
         """Show only layer_idx."""
-        self._last_range = (layer_idx, layer_idx)
-        self._show_range( (layer_idx, layer_idx) )
+        self.show_range( layer_idx, layer_idx )
 
     def _show_range( self, rng: tuple[int,int] ) -> None:
         if not self._gcode or not self._layer_nodes:
