@@ -2630,6 +2630,20 @@ class BuildVolumeCreationPanel:
         except Exception:
             pass
 
+    def _save_bv_settings( self ) -> None:
+        """Save current UI values to the BuildVolume FP without closing."""
+        if hasattr( self._fp, "GCodeOutputFile" ):
+            self._fp.GCodeOutputFile = self._gcode_edit.text().strip()
+        if hasattr( self._fp, "EnableAutoSlice" ):
+            self._fp.EnableAutoSlice = self._auto_slice_check.isChecked()
+        import json as _j
+        if hasattr( self._fp, "PostProcessorsJson" ):
+            self._fp.PostProcessorsJson = _j.dumps( self._pipeline )
+        # Save post-processors
+        import json
+        if hasattr( self._fp, "PostProcessorsJson" ):
+            self._fp.PostProcessorsJson = json.dumps( self._pipeline )
+
     def accept( self ) -> bool:
         from build_volume.build_volume import make_build_volume
         from registry_object import get_registry_fp
@@ -2691,6 +2705,9 @@ class BuildVolumePanel:
         self._doc      = FreeCAD.ActiveDocument
         self.form      = QWidget()
         self.form.setMinimumWidth( 480 )
+        import json as _j
+        self._pipeline = _j.loads(
+            getattr( fp, "PostProcessorsJson", "[]" ) or "[]" )
         self._build_ui()
 
     def _build_ui( self ) -> None:
@@ -2787,6 +2804,33 @@ class BuildVolumePanel:
         layout.addWidget( slice_grp )
 
         # --- Assigned bodies ---
+        # --- Post-processors ---
+        pp_grp  = QGroupBox( "Post-Processors" )
+        pp_vbox = QVBoxLayout( pp_grp )
+
+        self._pp_list = QListWidget()
+        self._pp_list.setMaximumHeight( 100 )
+        self._pp_list.itemDoubleClicked.connect(
+            lambda item: self._configure_pp() )
+        self._refresh_pp_list()
+        pp_vbox.addWidget( self._pp_list )
+
+        pp_btns = QHBoxLayout()
+        btn_pp_add  = QPushButton( "Add…" )
+        btn_pp_rem  = QPushButton( "Remove" )
+        btn_pp_cfg  = QPushButton( "Configure…" )
+        btn_pp_up   = QPushButton( "▲" )
+        btn_pp_down = QPushButton( "▼" )
+        btn_pp_add.clicked.connect( self._add_pp )
+        btn_pp_rem.clicked.connect( self._remove_pp )
+        btn_pp_cfg.clicked.connect( self._configure_pp )
+        btn_pp_up.clicked.connect( self._move_pp_up )
+        btn_pp_down.clicked.connect( self._move_pp_down )
+        for b in ( btn_pp_add, btn_pp_rem, btn_pp_cfg, btn_pp_up, btn_pp_down ):
+            pp_btns.addWidget( b )
+        pp_vbox.addLayout( pp_btns )
+        layout.addWidget( pp_grp )
+
         body_grp  = QGroupBox( "Assigned Bodies" )
         body_vbox = QVBoxLayout( body_grp )
 
@@ -2940,6 +2984,134 @@ class BuildVolumePanel:
         if len( fps ) == len( ids ):
             self._fp.Proxy.set_user_layer_fps( self._fp, fps )
 
+    def _refresh_pp_list( self ) -> None:
+        self._pp_list.clear()
+        for entry in self._pipeline:
+            en   = "✓" if entry.get( "enabled", True ) else "✗"
+            name = entry.get( "script", "?" )
+            item = QListWidgetItem( f"{en} {name}" )
+            self._pp_list.addItem( item )
+
+    def _add_pp( self ) -> None:
+        from postprocess.base import discover_scripts, postprocess_dir
+        scripts = discover_scripts( postprocess_dir() )
+        if not scripts:
+            QMessageBox.information( self.form, "No scripts",
+                "No post-processor scripts found in postprocess/ directory." )
+            return
+        names = sorted( scripts.keys() )
+        labels = [ scripts[n].LABEL for n in names ]
+        from PySide2.QtWidgets import QInputDialog
+        label, ok = QInputDialog.getItem(
+            self.form, "Add Post-Processor", "Select:", labels, 0, False )
+        if not ok:
+            return
+        idx = labels.index( label )
+        name = names[idx]
+        cls  = scripts[name]
+        from postprocess.base import _default_config
+        entry = {
+            "script":  name,
+            "enabled": True,
+            "config":  _default_config( cls ),
+        }
+        self._pipeline.append( entry )
+        self._refresh_pp_list()
+        self._pp_list.setCurrentRow( len( self._pipeline ) - 1 )
+
+    def _remove_pp( self ) -> None:
+        row = self._pp_list.currentRow()
+        if 0 <= row < len( self._pipeline ):
+            self._pipeline.pop( row )
+            self._refresh_pp_list()
+
+    def _configure_pp( self ) -> None:
+        row = self._pp_list.currentRow()
+        if not ( 0 <= row < len( self._pipeline ) ):
+            return
+        entry = self._pipeline[row]
+        from postprocess.base import discover_scripts, postprocess_dir
+        scripts = discover_scripts( postprocess_dir() )
+        cls = scripts.get( entry["script"] )
+        if cls is None:
+            return
+
+        dlg    = QDialog( self.form )
+        dlg.setWindowTitle( f"Configure: {cls.LABEL}" )
+        layout = QVBoxLayout( dlg )
+        layout.addWidget( QLabel( cls.DESCRIPTION ) )
+
+        # Enabled checkbox
+        en_check = QCheckBox( "Enabled" )
+        en_check.setChecked( entry.get( "enabled", True ) )
+        layout.addWidget( en_check )
+
+        # Settings form
+        form    = QFormLayout()
+        widgets = {}
+        cfg     = entry.get( "config", {} )
+        for key, meta in cls.SETTINGS.items():
+            val   = cfg.get( key, meta.get( "default" ) )
+            stype = meta.get( "type", "str" )
+            lbl   = meta.get( "label", key )
+            if stype == "int":
+                w = QSpinBox()
+                w.setMinimum( int( meta.get( "min", -99999 ) ) )
+                w.setMaximum( int( meta.get( "max",  99999 ) ) )
+                w.setValue( int( val or 0 ) )
+            elif stype == "float":
+                w = QDoubleSpinBox()
+                w.setMinimum( float( meta.get( "min", -99999 ) ) )
+                w.setMaximum( float( meta.get( "max",  99999 ) ) )
+                w.setDecimals( 2 )
+                w.setValue( float( val or 0 ) )
+            elif "options" in meta:
+                w = QComboBox()
+                w.addItems( meta["options"] )
+                if str(val) in meta["options"]:
+                    w.setCurrentText( str(val) )
+            else:
+                w = QLineEdit( str( val or "" ) )
+            if "hint" in meta:
+                w.setToolTip( meta["hint"] )
+            form.addRow( lbl + ":", w )
+            widgets[key] = ( w, stype, meta )
+        layout.addLayout( form )
+
+        btns = QDialogButtonBox( QDialogButtonBox.Ok | QDialogButtonBox.Cancel )
+        btns.accepted.connect( dlg.accept )
+        btns.rejected.connect( dlg.reject )
+        layout.addWidget( btns )
+
+        if dlg.exec_() == QDialog.Accepted:
+            entry["enabled"] = en_check.isChecked()
+            new_cfg = {}
+            for key, ( w, stype, meta ) in widgets.items():
+                if isinstance( w, QSpinBox ):
+                    new_cfg[key] = w.value()
+                elif isinstance( w, QDoubleSpinBox ):
+                    new_cfg[key] = w.value()
+                elif isinstance( w, QComboBox ):
+                    new_cfg[key] = w.currentText()
+                else:
+                    new_cfg[key] = w.text()
+            entry["config"] = new_cfg
+            self._refresh_pp_list()
+
+    def _move_pp_up( self ) -> None:
+        row = self._pp_list.currentRow()
+        if row > 0:
+            self._pipeline.insert( row-1, self._pipeline.pop(row) )
+            self._refresh_pp_list()
+            self._pp_list.setCurrentRow( row-1 )
+
+    def _move_pp_down( self ) -> None:
+        row = self._pp_list.currentRow()
+        if row < len( self._pipeline ) - 1:
+            self._pipeline.insert( row+1, self._pipeline.pop(row) )
+            self._refresh_pp_list()
+            self._pp_list.setCurrentRow( row+1 )
+
     def _edit_machine_layer( self ) -> None:
         """Open editor for the currently selected machine layer."""
         lid = self._machine_combo.currentData( QtCore.Qt.UserRole )
@@ -3023,9 +3195,8 @@ class BuildVolumePanel:
             self._gcode_edit.setText( path )
 
     def _slice_now( self ) -> None:
-        """Save current settings then run slice immediately."""
-        self.accept()   # saves all settings first
-        # accept() closed the dialog — run slice directly
+        """Save current settings then run slice without closing dialog."""
+        self._save_bv_settings()
         try:
             from registry_object import get_registry
             from slicer.engine import slice_build_volume
@@ -3173,6 +3344,9 @@ class BuildVolumePanel:
             self._fp.GCodeOutputFile = self._gcode_edit.text().strip()
         if hasattr( self._fp, "EnableAutoSlice" ):
             self._fp.EnableAutoSlice = self._auto_slice_check.isChecked()
+        import json as _j
+        if hasattr( self._fp, "PostProcessorsJson" ):
+            self._fp.PostProcessorsJson = _j.dumps( self._pipeline )
 
         # Link machine layer
         lid    = self._machine_combo.currentData( QtCore.Qt.UserRole )

@@ -250,6 +250,13 @@ class BuildVolume:
                 "Last layer to display (-1 = all)"
             ).GCodeLayerTo = -1
 
+        if "PostProcessorsJson" not in existing:
+            fp.addProperty(
+                "App::PropertyString", "PostProcessorsJson", _GRP_SLICE,
+                "Post-processor pipeline (JSON)"
+            ).PostProcessorsJson = "[]"
+        fp.setEditorMode( "PostProcessorsJson", 2 )   # hidden
+
         _GRP_RESULT = "Slice Results"
         for prop, typ, desc, default in [
             ( "SliceTime",       "App::PropertyString",  "Estimated print time",              "" ),
@@ -398,25 +405,45 @@ class BuildVolume:
                               fp.GCodeOutputFile )
                 Log( LogLevel.info,
                     f"[AutoSlice] G-code written to { fp.GCodeOutputFile }\n" )
-                # Append settings summary to G-code header
+                # Build effective settings for pipeline context
+                _eff_settings = {}
                 try:
-                    from registry_object import get_registry
-                    _reg  = get_registry( fp.Document )
-                    _stk  = fp.Proxy.resolve_stack( fp, _reg ) if _reg else None
-                    if _stk:
-                        _eff = _stk.effective()
-                        _lines = [
-                            "\n;--- CuraRebuild Settings ---",
-                        ]
-                        for _k, _v in sorted( _eff.items() ):
-                            _lines.append( f";{_k}={_v}" )
-                        _lines.append( ";--- End Settings ---\n" )
-                        with open( str(result.gcode_path), "a",
-                                   encoding="utf-8" ) as _gf:
-                            _gf.write( "\n".join( _lines ) )
-                except Exception as _se:
+                    from registry_object import get_registry as _get_reg
+                    _pp_reg = _get_reg( fp.Document )
+                    if _pp_reg:
+                        _pp_stk = fp.Proxy.resolve_stack( fp, _pp_reg )
+                        _eff_settings = _pp_stk.effective()
+                except Exception:
+                    pass
+
+                # Run post-processor pipeline
+                try:
+                    import json as _json
+                    _pipeline = _json.loads(
+                        getattr( fp, "PostProcessorsJson", "[]" ) or "[]" )
+                    if _pipeline:
+                        from postprocess.base import run_pipeline, postprocess_dir
+                        from gcode_viewer.parser import parse as _pp_parse,                             analyse as _pp_analyse
+                        _gc   = _pp_parse( result.gcode_path )
+                        _stat = _pp_analyse( _gc )
+                        _gcode_text = pathlib.Path(
+                            str( result.gcode_path ) ).read_text(
+                            encoding="utf-8", errors="replace" )
+                        _gcode_text = run_pipeline(
+                            _gcode_text, _pipeline,
+                            postprocess_dir(),
+                            context={
+                                "layer_count":       _stat.layer_count,
+                                "total_time_s":      _stat.time_seconds,
+                                "layer_time":        _stat.layer_time,
+                                "effective_settings": _eff_settings,
+                            }
+                        )
+                        pathlib.Path( str( result.gcode_path ) ).write_text(
+                            _gcode_text, encoding="utf-8" )
+                except Exception as _pe:
                     Log( LogLevel.warning,
-                        f"[AutoSlice] Settings dump failed: { _se }\n" )
+                        f"[AutoSlice] Post-processing failed: { _pe }\n" )
 
                 # Analyse G-code and write result properties
                 try:

@@ -353,6 +353,7 @@ class GCodeAnalysis:
     bounds_min:        tuple[float,float,float]
     bounds_max:        tuple[float,float,float]
     feature_time:      dict[Feature, float]   # feature → seconds
+    layer_time:        dict[int, float]       # layer_idx → seconds for that layer
     layer_count:       int
 
     def filament_summary( self ) -> str:
@@ -409,6 +410,7 @@ def analyse( gcode: GCodeFile ) -> GCodeAnalysis:
     time_s:       float = 0.0
     fil_mm:       dict[int, float] = {}   # extruder → mm of filament
     feat_time:    dict[Feature, float] = {}
+    layer_time:   dict[int, float] = {}
     xs: list[float] = []
     ys: list[float] = []
     zs: list[float] = []
@@ -426,6 +428,7 @@ def analyse( gcode: GCodeFile ) -> GCodeAnalysis:
             dt = dist / speed
             time_s += dt
             feat_time[move.feature] = feat_time.get( move.feature, 0.0 ) + dt
+            layer_time[move.layer_idx] = layer_time.get( move.layer_idx, 0.0 ) + dt
 
             # Filament from extrusion moves
             if move.width > 0 and dist > 0:
@@ -465,12 +468,21 @@ def analyse( gcode: GCodeFile ) -> GCodeAnalysis:
         bmin = ( 0.0, 0.0, 0.0 )
         bmax = ( 0.0, 0.0, 0.0 )
 
+    # Build cumulative elapsed time per layer start
+    sorted_layers = sorted( layer_time.keys() )
+    cumulative: dict[int, float] = {}
+    elapsed = 0.0
+    for idx in sorted_layers:
+        cumulative[idx] = elapsed
+        elapsed += layer_time.get( idx, 0.0 )
+
     return GCodeAnalysis(
         time_seconds  = time_s,
         filament_m    = fil_m,
-        filament_mm3  = {},   # can add if needed
+        filament_mm3  = {},
         bounds_min    = bmin,
         bounds_max    = bmax,
         feature_time  = feat_time,
+        layer_time    = cumulative,   # elapsed seconds at start of each layer
         layer_count   = gcode.layer_count(),
     )
