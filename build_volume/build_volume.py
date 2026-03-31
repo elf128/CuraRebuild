@@ -250,6 +250,20 @@ class BuildVolume:
                 "Last layer to display (-1 = all)"
             ).GCodeLayerTo = -1
 
+        _GRP_RESULT = "Slice Results"
+        for prop, typ, desc, default in [
+            ( "SliceTime",       "App::PropertyString",  "Estimated print time",              "" ),
+            ( "SliceTimeRaw",    "App::PropertyInteger", "Estimated print time (seconds)",     0  ),
+            ( "FilamentTotal",   "App::PropertyString",  "Total filament used",                "" ),
+            ( "FilamentPerExtruder", "App::PropertyString", "Filament per extruder",           "" ),
+            ( "PrintBoundsMin",  "App::PropertyString",  "Print bounding box minimum (mm)",    "" ),
+            ( "PrintBoundsMax",  "App::PropertyString",  "Print bounding box maximum (mm)",    "" ),
+        ]:
+            if prop not in existing:
+                fp.addProperty( typ, prop, _GRP_RESULT, desc )
+                setattr( fp, prop, default )
+            fp.setEditorMode( prop, 1 )   # read-only
+
         if "GCodeShowTravel" not in existing:
             fp.addProperty(
                 "App::PropertyBool", "GCodeShowTravel", _GRP_VIZ,
@@ -384,11 +398,47 @@ class BuildVolume:
                               fp.GCodeOutputFile )
                 Log( LogLevel.info,
                     f"[AutoSlice] G-code written to { fp.GCodeOutputFile }\n" )
+                # Append settings summary to G-code header
+                try:
+                    from registry_object import get_registry
+                    _reg  = get_registry( fp.Document )
+                    _stk  = fp.Proxy.resolve_stack( fp, _reg ) if _reg else None
+                    if _stk:
+                        _eff = _stk.effective()
+                        _lines = [
+                            "\n;--- CuraRebuild Settings ---",
+                        ]
+                        for _k, _v in sorted( _eff.items() ):
+                            _lines.append( f";{_k}={_v}" )
+                        _lines.append( ";--- End Settings ---\n" )
+                        with open( str(result.gcode_path), "a",
+                                   encoding="utf-8" ) as _gf:
+                            _gf.write( "\n".join( _lines ) )
+                except Exception as _se:
+                    Log( LogLevel.warning,
+                        f"[AutoSlice] Settings dump failed: { _se }\n" )
+
+                # Analyse G-code and write result properties
+                try:
+                    from gcode_viewer.parser import parse as _parse_gc, analyse as _analyse_gc
+                    gc   = _parse_gc( result.gcode_path )
+                    stat = _analyse_gc( gc )
+                    fp.SliceTime         = stat.time_formatted()
+                    fp.SliceTimeRaw      = int( stat.time_seconds )
+                    fp.FilamentTotal     = stat.filament_summary()
+                    fp.FilamentPerExtruder = stat.per_extruder_summary()
+                    bmin, bmax = stat.bounds_min, stat.bounds_max
+                    fp.PrintBoundsMin    = (
+                        f"{ bmin[0]:.1f}, { bmin[1]:.1f}, { bmin[2]:.1f}" )
+                    fp.PrintBoundsMax    = (
+                        f"{ bmax[0]:.1f}, { bmax[1]:.1f}, { bmax[2]:.1f}" )
+                except Exception as _e:
+                    Log( LogLevel.warning,
+                        f"[AutoSlice] G-code analysis failed: { _e }\n" )
                 # Trigger G-code viewer refresh if visible
                 if getattr( fp, "ShowGCode", False ):
                     vp = getattr( fp, "ViewObject", None )
                     if vp and hasattr( vp, "Proxy" ) and hasattr( vp.Proxy, "update_gcode" ):
-                        # Reset mtime cache so update_gcode re-parses
                         vp.Proxy._loaded_gcode_mtime = 0
                         vp.Proxy.update_gcode( fp )
             elif not result.success:
@@ -522,11 +572,10 @@ class BuildVolume:
             if lid
         ]
         user_layers = [ l for l in user_layers if l is not None ]
-        # SettingsStack treats index -1 as highest priority.
-        # UserLayers list order: index 0 = top of UI = lowest priority,
-        # last item = bottom of UI = highest priority.
-        # No reversal needed — bottom of UI list = highest priority.
-        return SettingsStack( machine, user_layers )
+        # Get extruder layers from registry for full resolution
+        extruder_layers = list( registry.all_extruder_layers() )
+        return SettingsStack( machine, user_layers,
+                              extruder_layers=extruder_layers )
 
     # ------------------------------------------------------------------
     # Assigned bodies (link-based)

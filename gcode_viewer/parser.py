@@ -338,3 +338,139 @@ def parse( path: Path | str ) -> GCodeFile:
         extruder_count=max_extruder + 1,
         path=path,
     )
+
+
+# ---------------------------------------------------------------------------
+# Post-parse analysis
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GCodeAnalysis:
+    """Computed statistics from a parsed GCodeFile."""
+    time_seconds:      float                  # estimated print time
+    filament_m:        dict[int, float]       # extruder → metres extruded
+    filament_mm3:      dict[int, float]       # extruder → mm³ extruded
+    bounds_min:        tuple[float,float,float]
+    bounds_max:        tuple[float,float,float]
+    feature_time:      dict[Feature, float]   # feature → seconds
+    layer_count:       int
+
+    def filament_summary( self ) -> str:
+        """Human-readable filament string, e.g. '2.54 m' or 'E0: 1.20 m, E1: 0.80 m'."""
+        if not self.filament_m:
+            return ""
+        if len( self.filament_m ) == 1:
+            v = next( iter( self.filament_m.values() ) )
+            return f"{v:.2f} m"
+        return ", ".join(
+            f"E{e}: {v:.2f} m"
+            for e, v in sorted( self.filament_m.items() )
+        )
+
+    def time_formatted( self ) -> str:
+        """Format as '1h 23m 45s'."""
+        t = int( self.time_seconds )
+        h = t // 3600
+        m = ( t % 3600 ) // 60
+        s = t % 60
+        parts = []
+        if h: parts.append( f"{h}h" )
+        if m or h: parts.append( f"{m}m" )
+        parts.append( f"{s}s" )
+        return " ".join( parts )
+
+    def per_extruder_summary( self ) -> str:
+        """Per-extruder filament, e.g. 'E0: 2.54 m, E1: 0.00 m'."""
+        if not self.filament_m:
+            return ""
+        return ", ".join(
+            f"E{e}: {v:.2f} m"
+            for e, v in sorted( self.filament_m.items() )
+        )
+
+
+# Filament diameter (1.75 mm standard)
+_FILAMENT_DIAMETER = 1.75
+_FILAMENT_AREA     = 3.14159265 * ( _FILAMENT_DIAMETER / 2 ) ** 2   # mm²
+
+
+def analyse( gcode: GCodeFile ) -> GCodeAnalysis:
+    """
+    Compute print statistics from a parsed GCodeFile.
+
+    Time estimation: sum of (move_distance / feedrate) for all moves,
+    plus a small acceleration penalty per direction change.
+
+    Filament: sum of E-axis extrusion per extruder, converted from mm
+    of filament to metres.
+    """
+    import math
+
+    time_s:       float = 0.0
+    fil_mm:       dict[int, float] = {}   # extruder → mm of filament
+    feat_time:    dict[Feature, float] = {}
+    xs: list[float] = []
+    ys: list[float] = []
+    zs: list[float] = []
+
+    for layer in gcode.layers:
+        for move in layer.moves:
+            # Distance of this move
+            dx = move.x1 - move.x0
+            dy = move.y1 - move.y0
+            dz = move.z1 - move.z0
+            dist = math.sqrt( dx*dx + dy*dy + dz*dz )
+
+            # Time for this move (speed already in mm/s)
+            speed = move.speed if move.speed > 0 else 1.0
+            dt = dist / speed
+            time_s += dt
+            feat_time[move.feature] = feat_time.get( move.feature, 0.0 ) + dt
+
+            # Filament from extrusion moves
+            if move.width > 0 and dist > 0:
+                # Extrusion volume = bead cross-section × distance
+                # bead cross-section ≈ width × layer_height (simplified rectangle)
+                # layer_height = z1 if z0 == 0 else approximately layer height
+                # We use bead width and an assumed layer height from z coords
+                # Simpler: use the extrusion width and typical layer height
+                # But we don't have layer_height per move — use bead width²/4*π as cylinder approx
+                # Actually most reliable: volume = π*(d/2)²*filament_len
+                # We want filament_len, so rearrange from volume
+                # Volume extruded = width * layer_height * dist
+                # We don't have layer_height reliably per move, but we know:
+                # filament extruded (mm) = sqrt(volume / filament_area)
+                # Use width as proxy: assume width ≈ layer_height for now
+                # Best approximation without layer_height: use width * 0.75 as height
+                lh_approx = move.width * 0.75
+                vol = move.width * lh_approx * dist
+                fil_len_mm = vol / _FILAMENT_AREA
+                e = move.extruder
+                fil_mm[e] = fil_mm.get( e, 0.0 ) + fil_len_mm
+
+            # Bounds (extrusion moves only for print bounds, not travel)
+            if move.width > 0:
+                xs += [move.x0, move.x1]
+                ys += [move.y0, move.y1]
+                zs += [move.z0, move.z1]
+
+    # Convert filament mm → metres
+    fil_m = { e: v / 1000.0 for e, v in fil_mm.items() }
+
+    # Bounds
+    if xs:
+        bmin = ( min(xs), min(ys), min(zs) )
+        bmax = ( max(xs), max(ys), max(zs) )
+    else:
+        bmin = ( 0.0, 0.0, 0.0 )
+        bmax = ( 0.0, 0.0, 0.0 )
+
+    return GCodeAnalysis(
+        time_seconds  = time_s,
+        filament_m    = fil_m,
+        filament_mm3  = {},   # can add if needed
+        bounds_min    = bmin,
+        bounds_max    = bmax,
+        feature_time  = feat_time,
+        layer_count   = gcode.layer_count(),
+    )

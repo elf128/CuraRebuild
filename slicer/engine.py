@@ -193,8 +193,19 @@ def slice_build_volume(
     except Exception:
         pass
 
+    # Get extruder layers from registry
+    extruder_layers = None
+    try:
+        from registry_object import get_registry
+        reg = get_registry( build_volume_fp.Document )
+        if reg:
+            extruder_layers = reg.all_extruder_layers()
+    except Exception:
+        pass
+
     def_paths = write_all_defs( stack, output_dir,
-                                body_ids=body_ids, fp_map=fp_map )
+                                body_ids=body_ids, fp_map=fp_map,
+                                extruder_layers=extruder_layers )
 
     # Copy base definition files to temp dir so CuraEngine can resolve "inherits"
     import shutil as _shutil
@@ -255,6 +266,39 @@ def slice_build_volume(
     )
     profile_def = extruder_defs[0] if extruder_defs else def_paths["profile"]
 
+    # Validate: warn if stack references disabled extruders
+    if extruder_layers:
+        enabled_nrs = { el.extruder_nr for el in extruder_layers if el.enabled }
+        all_nrs     = { el.extruder_nr for el in extruder_layers }
+        warnings: list[str] = []
+
+        # Check body extruder assignments
+        for obj in bodies:
+            cfg = body_configs.get( obj.Name )
+            if cfg and cfg.extruder_nr in all_nrs and                     cfg.extruder_nr not in enabled_nrs:
+                warnings.append(
+                    f"Body '{obj.Name}' assigned to disabled extruder {cfg.extruder_nr}" )
+
+        # Check stack settings that reference extruder numbers
+        eff = stack.effective()
+        extruder_nr_keys = [
+            k for k in eff if k.endswith( "_extruder_nr" ) or k == "extruder_nr"
+        ]
+        for key in extruder_nr_keys:
+            val = eff.get( key )
+            if val is None: continue
+            try:
+                nr = int( val )
+            except (TypeError, ValueError):
+                continue
+            if nr in all_nrs and nr not in enabled_nrs:
+                warnings.append(
+                    f"Setting '{key}' = {nr} references disabled extruder" )
+
+        for w in warnings:
+            log( f"⚠ {w}" )
+            Log( LogLevel.warning, f"[SlicerEngine] {w}\n" )
+
     # Build per-body config dicts for build_cura_args
     from registry_object import get_registry
     registry = get_registry( build_volume_fp.Document )
@@ -285,6 +329,30 @@ def slice_build_volume(
         extra_defs=extruder_defs[1:] if len(extruder_defs) > 1 else [],
         per_body_configs=per_body,
     )
+
+    # Inject extruder layer settings using -e<nr> -s syntax —
+    # CuraEngine 4.12 requires this for per-extruder overrides to take effect.
+    # Def file overrides are ignored for these settings.
+    if extruder_layers:
+        from settings.stack import EXTRUDER_SETTING_KEYS
+        schema = stack._active_schema() if hasattr( stack, "_active_schema" ) else None
+        from settings.stack import _active_schema as _asch
+        _schema = _asch()
+        for el in sorted( extruder_layers, key=lambda e: e.extruder_nr ):
+            extruder_args = []
+            for key in EXTRUDER_SETTING_KEYS:
+                val = el.get( key )
+                if val is None:
+                    continue
+                sdef = _schema.get( key )
+                if sdef is None or not sdef.cura_key:
+                    continue
+                if isinstance( val, bool ):
+                    extruder_args += [ "-s", f"{sdef.cura_key}={'true' if val else 'false'}" ]
+                else:
+                    extruder_args += [ "-s", f"{sdef.cura_key}={val}" ]
+            if extruder_args:
+                args += [ f"-e{el.extruder_nr}" ] + extruder_args
 
     log(f"Invoking CuraEngine: {' '.join(str(a) for a in args)}")
 

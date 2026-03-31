@@ -34,7 +34,7 @@ import json
 import FreeCAD
 from FreeCAD import Console
 
-from settings.stack import SettingsRegistry, MachineLayer, UserLayer, BaseLayer
+from settings.stack import SettingsRegistry, MachineLayer, UserLayer, ExtruderLayer, BaseLayer, EXTRUDER_SETTING_KEYS
 from Common         import Log, LogLevel
 
 
@@ -121,7 +121,8 @@ class RegistryObject:
 
         all_layers: list[BaseLayer] = (
             self._registry.all_machine_layers() +
-            self._registry.all_user_layers()
+            self._registry.all_user_layers() +
+            self._registry.all_extruder_layers()
         )
         layer_by_id = { l.id: l for l in all_layers }
 
@@ -160,6 +161,18 @@ class RegistryObject:
     ) -> UserLayer:
         """Create a new UserLayer, register it, and create its FP child."""
         layer = self._registry.create_user_layer( name )
+        self._create_layer_fp( fp, layer )
+        return layer
+
+    def create_extruder_layer(
+        self,
+        fp:          FreeCAD.DocumentObject,
+        name:        str,
+        extruder_nr: int,
+        enabled:     bool = True,
+    ) -> ExtruderLayer:
+        """Create a new ExtruderLayer, register it, and create its FP child."""
+        layer = self._registry.create_extruder_layer( name, extruder_nr, enabled )
         self._create_layer_fp( fp, layer )
         return layer
 
@@ -253,7 +266,8 @@ class RegistryObject:
         warned = []
         all_layers = (
             list( self._registry.all_machine_layers() ) +
-            list( self._registry.all_user_layers() )
+            list( self._registry.all_user_layers() ) +
+            list( self._registry.all_extruder_layers() )
         )
         for layer in all_layers:
             if hasattr( layer, "is_linked" ) and layer.is_linked():
@@ -291,7 +305,42 @@ class RegistryObject:
         Log( LogLevel.info,
             f"[CuraRebuildRegistry] Restored: "
             f"{ len( self._registry.all_machine_layers() ) } machine(s), "
-            f"{ len( self._registry.all_user_layers() ) } user layer(s)\n" )
+            f"{ len( self._registry.all_user_layers() ) } user layer(s), "
+            f"{ len( self._registry.all_extruder_layers() ) } extruder(s)\n" )
+
+    def _migrate_extruder_layers( self, fp: FreeCAD.DocumentObject ) -> None:
+        """
+        Auto-create extruder layers from machine_extruder_count on first load.
+        Migrates material_diameter and nozzle settings from MachineLayer.
+        """
+        # Find machine layer to read extruder count and settings to migrate
+        machine = None
+        for ml in self._registry.all_machine_layers():
+            machine = ml; break
+        n = 1
+        if machine:
+            try:
+                n = int( machine.get( "machine_extruder_count" ) or 1 )
+            except Exception:
+                n = 1
+
+        for idx in range( n ):
+            name  = f"Extruder {idx}"
+            # Use self.create_extruder_layer so FP child is created immediately
+            layer = self.create_extruder_layer( fp, name, idx, True )
+            # Migrate extruder-relevant settings from MachineLayer
+            if machine:
+                for key in EXTRUDER_SETTING_KEYS:
+                    val = machine.get( key )
+                    if val is not None:
+                        try:
+                            layer.set( key, val )
+                        except Exception:
+                            pass
+            Log( LogLevel.info,
+                f"[CuraRebuildRegistry] Migrated extruder layer '{name}'\n" )
+
+        self.save_to_fp( fp )
 
     def __getstate__( self ):
         # Return plain string — FreeCAD uses this for pickle-based save/restore.

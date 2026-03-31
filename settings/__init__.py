@@ -33,8 +33,8 @@ from .schema import (
     SchemaRegistry, get_registry,
 )
 from .stack import (
-    BaseLayer, MachineLayer, UserLayer, ObjectLayer,
-    SettingsStack, SettingsRegistry,
+    BaseLayer, MachineLayer, UserLayer, ExtruderLayer, ObjectLayer,
+    SettingsStack, SettingsRegistry, EXTRUDER_SETTING_KEYS,
 )
 from .storage import JsonBackend, FreeCADBackend, CompoundBackend
 from .cura_export import write_all_defs, build_cura_args

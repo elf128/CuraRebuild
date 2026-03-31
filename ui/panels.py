@@ -53,7 +53,8 @@ from settings.schema import (
     get_registry as _get_schema_registry,
 )
 from settings.stack import (
-    MachineLayer, UserLayer, SettingsStack, SettingsRegistry
+    MachineLayer, UserLayer, ExtruderLayer, SettingsStack, SettingsRegistry,
+    EXTRUDER_SETTING_KEYS,
 )
 from settings.expr_eval import eval_enabled, eval_value, extract_dependencies
 from registry_object import flush_registry
@@ -2156,6 +2157,132 @@ class UserLayerPanel:
 # RegistryPanel
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# ExtruderLayerPanel
+# ---------------------------------------------------------------------------
+
+class ExtruderLayerPanel:
+    """Task panel for creating or editing an ExtruderLayer."""
+
+    def __init__(
+        self,
+        registry:       SettingsRegistry,
+        doc,
+        existing_layer: ExtruderLayer | None = None,
+    ):
+        self._registry = registry
+        self._doc      = doc
+        self._layer    = existing_layer or ExtruderLayer(
+            name        = "Extruder 0",
+            extruder_nr = 0,
+            enabled     = True,
+        )
+        self._is_new   = existing_layer is None
+        self.form      = QWidget()
+        self._build_ui()
+
+    def _build_ui( self ) -> None:
+        layout = QVBoxLayout( self.form )
+
+        # Name + extruder nr + enabled
+        hdr_form = QFormLayout()
+
+        self._name_edit = QLineEdit( self._layer.name )
+        self._name_edit.textChanged.connect(
+            lambda t: setattr( self._layer, "name", t.strip() or self._layer.name )
+        )
+        hdr_form.addRow( "Name:", self._name_edit )
+
+        self._nr_spin = QSpinBox()
+        self._nr_spin.setMinimum( 0 )
+        self._nr_spin.setMaximum( 15 )
+        self._nr_spin.setValue( self._layer.extruder_nr )
+        self._nr_spin.valueChanged.connect(
+            lambda v: setattr( self._layer, "extruder_nr", v )
+        )
+        hdr_form.addRow( "Extruder number:", self._nr_spin )
+
+        self._enabled_check = QCheckBox( "Enabled" )
+        self._enabled_check.setChecked( self._layer.enabled )
+        self._enabled_check.toggled.connect(
+            lambda v: setattr( self._layer, "enabled", v )
+        )
+        hdr_form.addRow( "", self._enabled_check )
+
+        layout.addLayout( hdr_form )
+
+        # Settings editor — extruder-relevant categories only
+        from settings.schema import Category as _Cat
+        _ext_cats = [ _Cat.MACHINE, _Cat.MATERIAL ]
+        self._editor = LayerEditorWidget(
+            self._layer,
+            categories    = _ext_cats,
+            show_all_settings = True,
+            stack         = None,
+            show_overrides= False,
+        )
+        layout.addWidget( self._editor, stretch=1 )
+
+    def show_as_dialog( self ) -> bool:
+        dlg = QDialog( self.form.parentWidget() )
+        dlg.setWindowTitle( "Extruder Layer" )
+        dlg.setMinimumSize( 560, 480 )
+        layout = QVBoxLayout( dlg )
+        layout.addWidget( self.form )
+
+        btns = QHBoxLayout()
+        btn_ok     = QPushButton( "Save" )
+        btn_cancel = QPushButton( "Cancel" )
+        btn_ok.clicked.connect( dlg.accept )
+        btn_cancel.clicked.connect( dlg.reject )
+        btns.addStretch()
+        btns.addWidget( btn_ok )
+        btns.addWidget( btn_cancel )
+        layout.addLayout( btns )
+
+        if dlg.exec_() == QDialog.Accepted:
+            self._layer.name        = self._name_edit.text().strip() or self._layer.name
+            self._layer.extruder_nr = self._nr_spin.value()
+            self._layer.enabled     = self._enabled_check.isChecked()
+            self._editor.apply()
+            if self._is_new:
+                from registry_object import get_registry_fp
+                reg_fp = get_registry_fp( self._doc )
+                if reg_fp and hasattr( reg_fp, "Proxy" ):
+                    # Create new extruder layer and copy settings across
+                    new_layer = reg_fp.Proxy.create_extruder_layer(
+                        reg_fp,
+                        self._layer.name,
+                        self._layer.extruder_nr,
+                        self._layer.enabled,
+                    )
+                    for k, v in self._layer.as_dict().items():
+                        try:
+                            new_layer.set( k, v )
+                        except Exception:
+                            pass
+                else:
+                    self._registry.add_extruder_layer( self._layer )
+            from registry_object import flush_registry
+            flush_registry( self._doc )
+            # Trigger reslice on all BuildVolumes that use this registry
+            try:
+                for obj in self._doc.Objects:
+                    if getattr( getattr( obj, "Proxy", None ), "Type", "" ) == "BuildVolume":
+                        if getattr( obj, "EnableAutoSlice", False ):
+                            obj.Proxy._run_slice( obj )
+                        else:
+                            vp = getattr( obj, "ViewObject", None )
+                            if vp and hasattr( vp, "Proxy" ) and                                     hasattr( vp.Proxy, "update_gcode" ):
+                                vp.Proxy._loaded_gcode_mtime = 0
+                                vp.Proxy.update_gcode( obj )
+            except Exception:
+                pass
+            return True
+        return False
+
+
 class RegistryPanel:
     """
     Overview panel showing all machine and user layers in the registry,
@@ -2218,6 +2345,29 @@ class RegistryPanel:
         user_vbox.addLayout(u_btns)
         layout.addWidget(user_grp)
 
+        # --- Extruder layers ---
+        ext_grp  = QGroupBox( "Extruder Layers" )
+        ext_vbox = QVBoxLayout( ext_grp )
+
+        self._ext_list = QListWidget()
+        self._refresh_extruder_list()
+        self._ext_list.itemDoubleClicked.connect(
+            lambda item: self._edit_extruder()
+        )
+        ext_vbox.addWidget( self._ext_list )
+
+        ext_btns = QHBoxLayout()
+        btn_new_e  = QPushButton( "New…" )
+        btn_edit_e = QPushButton( "Edit…" )
+        btn_del_e  = QPushButton( "Delete" )
+        btn_new_e.clicked.connect( self._new_extruder )
+        btn_edit_e.clicked.connect( self._edit_extruder )
+        btn_del_e.clicked.connect( self._delete_extruder )
+        for b in ( btn_new_e, btn_edit_e, btn_del_e ):
+            ext_btns.addWidget( b )
+        ext_vbox.addLayout( ext_btns )
+        layout.addWidget( ext_grp )
+
         # --- CuraEngine path ---
         engine_grp  = QGroupBox( "CuraEngine" )
         engine_form = QFormLayout( engine_grp )
@@ -2260,6 +2410,48 @@ class RegistryPanel:
             )
             item.setData(QtCore.Qt.UserRole, layer.id)
             self._machine_list.addItem(item)
+
+    def _refresh_extruder_list( self ) -> None:
+        self._ext_list.clear()
+        for layer in self._registry.all_extruder_layers():
+            en   = "✓" if layer.enabled else "✗"
+            item = QListWidgetItem(
+                f"{en} E{layer.extruder_nr}: {layer.name}"
+                f"  [{len(layer.keys())} settings]"
+            )
+            item.setData( QtCore.Qt.UserRole, layer.id )
+            self._ext_list.addItem( item )
+
+    def _selected_extruder_id( self ) -> str | None:
+        item = self._ext_list.currentItem()
+        return item.data( QtCore.Qt.UserRole ) if item else None
+
+    def _new_extruder( self ) -> None:
+        panel = ExtruderLayerPanel( self._registry, self._doc )
+        if panel.show_as_dialog():
+            self._refresh_extruder_list()
+
+    def _edit_extruder( self ) -> None:
+        lid = self._selected_extruder_id()
+        if lid is None:
+            return
+        layer = self._registry.get_extruder_layer( lid )
+        panel = ExtruderLayerPanel( self._registry, self._doc,
+                                    existing_layer=layer )
+        if panel.show_as_dialog():
+            self._refresh_extruder_list()
+
+    def _delete_extruder( self ) -> None:
+        lid = self._selected_extruder_id()
+        if lid is None:
+            return
+        layer = self._registry.get_extruder_layer( lid )
+        if _confirm( self.form, "Delete Extruder",
+                     f"Delete extruder layer '{ layer.name }'?" ):
+            self._registry.remove_extruder_layer( lid )
+            from registry_object import flush_registry
+            flush_registry( self._doc )
+            self._refresh_extruder_list()
 
     def _refresh_user_list(self) -> None:
         self._user_list.clear()
@@ -2518,6 +2710,9 @@ class BuildVolumePanel:
                 self._machine_combo.setCurrentIndex( i )
                 break
         machine_row.addWidget( self._machine_combo, stretch=1 )
+        btn_edit_ml = QPushButton( "Edit…" )
+        btn_edit_ml.clicked.connect( self._edit_machine_layer )
+        machine_row.addWidget( btn_edit_ml )
         layout.addLayout( machine_row )
 
         # --- User layer stack ---
@@ -2544,6 +2739,25 @@ class BuildVolumePanel:
             stack_btns.addWidget( b )
         stack_vbox.addLayout( stack_btns )
         layout.addWidget( stack_grp )
+
+        # --- Extruder layers ---
+        ext_grp  = QGroupBox( "Extruder Layers" )
+        ext_vbox = QVBoxLayout( ext_grp )
+
+        self._bv_ext_list = QListWidget()
+        self._bv_ext_list.setMaximumHeight( 120 )
+        self._bv_ext_list.itemDoubleClicked.connect(
+            lambda item: self._edit_extruder_layer() )
+        self._refresh_bv_extruder_list()
+        ext_vbox.addWidget( self._bv_ext_list )
+
+        ext_btns = QHBoxLayout()
+        btn_edit_ext = QPushButton( "Edit…" )
+        btn_edit_ext.clicked.connect( self._edit_extruder_layer )
+        ext_btns.addStretch()
+        ext_btns.addWidget( btn_edit_ext )
+        ext_vbox.addLayout( ext_btns )
+        layout.addWidget( ext_grp )
 
         # --- Slicing ---
         slice_grp  = QGroupBox( "Slicing" )
@@ -2726,6 +2940,52 @@ class BuildVolumePanel:
         if len( fps ) == len( ids ):
             self._fp.Proxy.set_user_layer_fps( self._fp, fps )
 
+    def _edit_machine_layer( self ) -> None:
+        """Open editor for the currently selected machine layer."""
+        lid = self._machine_combo.currentData( QtCore.Qt.UserRole )
+        if not lid:
+            return
+        try:
+            layer = self._registry.get_machine_layer( lid )
+            panel = MachineLayerPanel( self._registry, self._doc,
+                                       existing_layer=layer )
+            panel.show_as_dialog()
+            # Refresh combo label in case name changed
+            idx = self._machine_combo.currentIndex()
+            self._machine_combo.setItemText( idx, layer.name )
+        except Exception as e:
+            QMessageBox.warning( self.form, "Edit failed", str( e ) )
+
+    def _refresh_bv_extruder_list( self ) -> None:
+        self._bv_ext_list.clear()
+        for layer in self._registry.all_extruder_layers():
+            en   = "✓" if layer.enabled else "✗"
+            item = QListWidgetItem(
+                f"{en} E{layer.extruder_nr}: {layer.name}"
+                f"  [{len(layer.keys())} settings]"
+            )
+            item.setData( QtCore.Qt.UserRole, layer.id )
+            self._bv_ext_list.addItem( item )
+
+    def _edit_extruder_layer( self ) -> None:
+        item = self._bv_ext_list.currentItem()
+        if not item:
+            return
+        lid = item.data( QtCore.Qt.UserRole )
+        try:
+            from settings.stack import ExtruderLayer as _EL
+            layer = self._registry.get_extruder_layer( lid )
+            from ui.panels import ExtruderLayerPanel
+            panel = ExtruderLayerPanel( self._registry, self._doc,
+                                        existing_layer=layer )
+            if panel.show_as_dialog():
+                self._refresh_bv_extruder_list()
+                # Re-slice if auto-slice is on
+                if getattr( self._fp, "EnableAutoSlice", False ):
+                    self._fp.Proxy._run_slice( self._fp )
+        except Exception as e:
+            QMessageBox.warning( self.form, "Edit failed", str( e ) )
+
     def _move_up( self ) -> None:
         row = self._stack_list.currentRow()
         if row > 0:
@@ -2886,6 +3146,13 @@ class BuildVolumePanel:
             )
             set_body_config( self._fp, body_name, new_cfg )
             self._refresh_body_list()
+            # Trigger reslice immediately — mesh type affects G-code
+            if getattr( self._fp, "EnableAutoSlice", False ):
+                self._fp.Proxy._run_slice( self._fp )
+            vp = getattr( self._fp, "ViewObject", None )
+            if vp and hasattr( vp, "Proxy" ) and hasattr( vp.Proxy, "update_gcode" ):
+                vp.Proxy._loaded_gcode_mtime = 0
+                vp.Proxy.update_gcode( self._fp )
 
     def _remove_body( self ) -> None:
         row = self._body_table.currentRow()

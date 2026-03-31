@@ -299,6 +299,98 @@ class UserLayer(BaseLayer):
     def __setstate__( self, state ): pass
 
 
+# Settings that belong to the extruder context (not machine geometry)
+# These are moved out of MachineLayer into ExtruderLayer
+EXTRUDER_SETTING_KEYS: set[str] = {
+    "material_diameter",
+    "machine_nozzle_size",
+    "machine_nozzle_id",
+    "machine_nozzle_tip_outer_diameter",
+    "machine_nozzle_heat_zone_length",
+    "machine_nozzle_expansion_angle",
+    "machine_nozzle_cool_down_speed",
+    "machine_nozzle_heat_up_speed",
+    "machine_extruder_start_code",
+    "machine_extruder_end_code",
+    "extruder_prime_pos_x",
+    "extruder_prime_pos_y",
+    "extruder_prime_pos_z",
+}
+
+
+class ExtruderLayer( BaseLayer ):
+    """
+    Per-extruder settings layer — one per physical extruder on the machine.
+    Stores nozzle size, filament diameter, extruder start/end code, etc.
+    Lives in the SettingsRegistry; ordered by extruder_nr (0-based).
+
+    The `enabled` flag controls:
+    - Export: disabled extruders get a minimal def (no user stack overrides)
+    - Validation: warns if stack references a disabled extruder
+    """
+
+    def __init__(
+        self,
+        name:        str  = "Extruder 0",
+        layer_id:    str | None = None,
+        extruder_nr: int  = 0,
+        enabled:     bool = True,
+    ):
+        super().__init__( name=name, layer_id=layer_id )
+        self.extruder_nr = extruder_nr
+        self.enabled     = enabled
+
+    def __repr__( self ) -> str:
+        en = "enabled" if self.enabled else "disabled"
+        return ( f"ExtruderLayer(name={self.name!r}, "
+                 f"nr={self.extruder_nr}, {en}, keys={len(self.keys())})" )
+
+    def __getstate__( self ): return "ExtruderLayer"
+    def __setstate__( self, state ): pass
+
+    # ------------------------------------------------------------------
+    # Serialisation
+
+    def to_plain_dict( self ) -> dict:
+        d = {
+            "id":           self.id,
+            "name":         self.name,
+            "type":         "ExtruderLayer",
+            "extruder_nr":  self.extruder_nr,
+            "enabled":      self.enabled,
+            "settings":     self._settings_by_category(),
+        }
+        return d
+
+    def to_registry_dict( self ) -> dict:
+        return self.to_plain_dict()
+
+    @classmethod
+    def from_plain_dict( cls, d: dict ) -> "ExtruderLayer":
+        layer = cls(
+            name        = d.get( "name", "Extruder" ),
+            layer_id    = d.get( "id" ),
+            extruder_nr = int( d.get( "extruder_nr", 0 ) ),
+            enabled     = bool( d.get( "enabled", True ) ),
+        )
+        layer._load_from_dict( d )
+        return layer
+
+    def _settings_by_category( self ) -> dict:
+        """Return settings grouped by category for serialisation."""
+        schema = _active_schema()
+        out: dict[str, dict] = {}
+        for key, val in self._data.items():
+            sdef = schema.get( key )
+            cat  = sdef.category if sdef else "Extruder"
+            out.setdefault( cat, {} )[ key ] = val
+        for key, expr in self._expressions.items():
+            sdef = schema.get( key )
+            cat  = sdef.category if sdef else "Extruder"
+            out.setdefault( cat, {} )[ key ] = expr
+        return out
+
+
 class ObjectLayer:
     """
     Top-of-stack layer — per-body overrides, always local to one SettingsStack.
@@ -369,10 +461,16 @@ class SettingsStack:
         machine_layer: MachineLayer,
         user_layers: list[UserLayer] | None = None,
         object_layer: ObjectLayer | None = None,
+        extruder_layers: list | None = None,
     ):
-        self._machine: MachineLayer = machine_layer
-        self._user: list[UserLayer] = list(user_layers or [])
-        self._object: ObjectLayer = object_layer or ObjectLayer()
+        self._machine:   MachineLayer      = machine_layer
+        self._user:      list[UserLayer]   = list(user_layers or [])
+        self._object:    ObjectLayer       = object_layer or ObjectLayer()
+        self._extruders: list              = list(extruder_layers or [])
+        # Build extruder_nr → ExtruderLayer map for fast lookup
+        self._extruder_map: dict[int, object] = {
+            el.extruder_nr: el for el in self._extruders
+        }
 
     # ------------------------------------------------------------------
     # Layer management
@@ -464,7 +562,16 @@ class SettingsStack:
         if v is not None:
             return v
 
-        # 4. Schema default
+        # 4. Extruder layers (use enabled extruder with nr=0 as fallback,
+        #    or first enabled extruder if nr=0 not present)
+        for el in self._extruders:
+            if el.enabled:
+                v = el.get(key)
+                if v is not None:
+                    return v
+                break   # only check first enabled extruder for base resolution
+
+        # 5. Schema default
         return get_default(key)
 
     def set(self, key: str, value: Any, layer_id: str) -> None:
@@ -587,10 +694,15 @@ class SettingsStack:
 
         # Build a filtered stack for this extruder
         filtered_users = [ l for l in self._user if _applies( l ) ]
+        # Include only the specific extruder layer for this index
+        ext_layer = self._extruder_map.get( extruder_idx )
+        ext_list  = [ ext_layer ] if ext_layer else []
+
         filtered_stack = SettingsStack(
             self._machine,
             filtered_users,
             self._object,
+            extruder_layers=ext_list,
         )
         return filtered_stack.effective()
 
@@ -632,6 +744,10 @@ class SettingsStack:
 
         if self._machine.has(key):
             return f"machine:{self._machine.name}"
+
+        for el in self._extruders:
+            if el.enabled and el.has(key):
+                return f"extruder:{el.name}"
 
         return "schema_default"
 
@@ -725,8 +841,9 @@ class SettingsRegistry:
     def __setstate__( self, state ): pass
 
     def __init__(self):
-        self._machines: dict[str, MachineLayer] = {}
-        self._users: dict[str, UserLayer] = {}
+        self._machines:  dict[str, MachineLayer]  = {}
+        self._users:     dict[str, UserLayer]     = {}
+        self._extruders: dict[str, ExtruderLayer] = {}
 
     # ------------------------------------------------------------------
     # Machine layers
@@ -775,6 +892,39 @@ class SettingsRegistry:
         return list(self._users.values())
 
     # ------------------------------------------------------------------
+    # Extruder layers
+
+    def create_extruder_layer(
+        self, name: str, extruder_nr: int, enabled: bool = True
+    ) -> ExtruderLayer:
+        layer = ExtruderLayer( name=name, extruder_nr=extruder_nr, enabled=enabled )
+        self._extruders[layer.id] = layer
+        return layer
+
+    def add_extruder_layer( self, layer: ExtruderLayer ) -> None:
+        self._extruders[layer.id] = layer
+
+    def get_extruder_layer( self, layer_id: str ) -> ExtruderLayer:
+        try:
+            return self._extruders[layer_id]
+        except KeyError:
+            raise KeyError( f"Extruder layer '{layer_id}' not found in registry." )
+
+    def get_extruder_by_nr( self, extruder_nr: int ) -> ExtruderLayer | None:
+        """Return the ExtruderLayer for a given extruder number, or None."""
+        for layer in self._extruders.values():
+            if layer.extruder_nr == extruder_nr:
+                return layer
+        return None
+
+    def remove_extruder_layer( self, layer_id: str ) -> None:
+        self._extruders.pop( layer_id, None )
+
+    def all_extruder_layers( self ) -> list[ExtruderLayer]:
+        """Return extruder layers sorted by extruder_nr."""
+        return sorted( self._extruders.values(), key=lambda l: l.extruder_nr )
+
+    # ------------------------------------------------------------------
     # Stack factory
 
     def make_stack(
@@ -792,13 +942,13 @@ class SettingsRegistry:
     # Serialisation
 
     def to_plain_dict(self) -> dict:
-        # Use to_registry_dict() so linked_path is persisted in the registry
-        # but NOT written into the linked files themselves
         return {
-            "machine_layers": [l.to_registry_dict()
-                                for l in self._machines.values()],
-            "user_layers":    [l.to_registry_dict()
-                                for l in self._users.values()],
+            "machine_layers":  [l.to_registry_dict()
+                                 for l in self._machines.values()],
+            "user_layers":     [l.to_registry_dict()
+                                 for l in self._users.values()],
+            "extruder_layers": [l.to_registry_dict()
+                                 for l in self.all_extruder_layers()],
         }
 
     @classmethod
@@ -808,11 +958,14 @@ class SettingsRegistry:
             registry.add_machine_layer(MachineLayer.from_plain_dict(ld))
         for ld in d.get("user_layers", []):
             registry.add_user_layer(UserLayer.from_plain_dict(ld))
+        for ld in d.get("extruder_layers", []):
+            registry.add_extruder_layer(ExtruderLayer.from_plain_dict(ld))
         return registry
 
     def __repr__(self) -> str:
         return (
             f"SettingsRegistry("
             f"machines={[l.name for l in self._machines.values()]}, "
-            f"users={[l.name for l in self._users.values()]})"
+            f"users={[l.name for l in self._users.values()]}, "
+            f"extruders={[l.name for l in self.all_extruder_layers()]})"
         )

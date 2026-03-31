@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from settings.schema import LayerRole
-from settings.stack import SettingsStack, _active_schema
+from settings.stack import SettingsStack, _active_schema, EXTRUDER_SETTING_KEYS
 
 
 # CuraEngine definition format version
@@ -79,6 +79,7 @@ def _machine_flat(stack: SettingsStack) -> dict[str, Any]:
         k: v for k, v in effective.items()
         if _active_schema().get(k) and _active_schema()[k].home_layer == LayerRole.MACHINE
         and _active_schema()[k].cura_key
+        and k not in EXTRUDER_SETTING_KEYS
     }
 
 
@@ -264,12 +265,15 @@ def write_all_defs(
     output_dir: Path | str,
     body_ids: list[str] | None = None,
     fp_map: dict | None = None,
+    extruder_layers: list | None = None,
 ) -> dict[str, Path]:
     """
     Write machine.def.json, per-extruder profile defs, and optionally
     per-body def files into output_dir.
 
-    fp_map: dict of layer_id → FP object for ApplyTo resolution.
+    fp_map:           dict of layer_id → FP object for ApplyTo resolution.
+    extruder_layers:  list[ExtruderLayer] from registry, sorted by extruder_nr.
+                      If None, falls back to counting from machine_extruder_count.
 
     Returns a dict:
         {
@@ -301,16 +305,41 @@ def write_all_defs(
     else:
         enabled_set = set( range( n_extruders ) )   # all enabled by default
 
-    # Write one profile per extruder
+    # Settings that belong in machine.def.json only (hardware geometry)
+    _MACHINE_ONLY = {
+        "machine_width", "machine_depth", "machine_height",
+        "machine_shape", "machine_center_is_zero",
+        "machine_heated_bed", "machine_heated_build_volume",
+        "machine_start_gcode", "machine_end_gcode",
+        "machine_extruder_count", "extruders_enabled_count",
+        "machine_gcode_flavor", "machine_firmware_retract",
+        "gantry_height",
+    }
+
+    # Build extruder_nr → ExtruderLayer map
+    ext_layer_map: dict[int, Any] = {}
+    if extruder_layers:
+        for el in extruder_layers:
+            ext_layer_map[el.extruder_nr] = el
+
+    # Write one def per extruder (always 0..n_extruders-1 for CuraEngine)
     for idx in range( n_extruders ):
-        if idx not in enabled_set:
-            continue   # skip disabled extruders
-        flat         = stack.resolve_for_extruder( idx, fp_map=fp_map )
-        # Exclude machine-home settings — those are already in machine.def.json
+        # Resolve user stack for this extruder (respects ApplyTo)
+        ext_layer = ext_layer_map.get( idx )
+        if ext_layer is not None and not ext_layer.enabled:
+            # Disabled extruder — export only ExtruderLayer settings, no user overrides
+            flat = dict( ext_layer.as_dict() )
+        else:
+            # Enabled extruder — full user stack resolution
+            flat = stack.resolve_for_extruder( idx, fp_map=fp_map )
+            # Merge ExtruderLayer settings on top (highest priority for hw settings)
+            if ext_layer is not None:
+                flat.update( ext_layer.as_dict() )
+
         profile_flat = {
             k: v for k, v in flat.items()
             if _active_schema().get(k) and _active_schema()[k].cura_key
-            and _active_schema()[k].home_layer != LayerRole.MACHINE
+            and k not in _MACHINE_ONLY
         }
         ext_path = output_dir / f"extruder_{idx}.def.json"
         write_extruder_def( profile_flat, idx, ext_path, machine_path )

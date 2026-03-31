@@ -384,11 +384,15 @@ class LayerViewProvider:
             if proxy._layer is None:
                 return False
 
-            from settings.stack import MachineLayer
-            from ui.panels import MachineLayerPanel, UserLayerPanel
+            from settings.stack import MachineLayer, ExtruderLayer
+            from ui.panels import MachineLayerPanel, UserLayerPanel,                 ExtruderLayerPanel
 
             if isinstance( proxy._layer, MachineLayer ):
                 panel = MachineLayerPanel(
+                    registry, doc, existing_layer=proxy._layer
+                )
+            elif isinstance( proxy._layer, ExtruderLayer ):
+                panel = ExtruderLayerPanel(
                     registry, doc, existing_layer=proxy._layer
                 )
             else:
